@@ -20,6 +20,26 @@ function inSameWeek(base,compare) {
   return c>=mon&&c<next;
 }
 function tc(t) { return t==="guard"?{bg:"#FCEBEB",border:"#F09595",text:"#791F1F"}:{bg:"#FAEEDA",border:"#FAC775",text:"#633806"}; }
+function chicagoTodayStr() {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const get = type => parts.find(p => p.type === type)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+function daysFromTodayChicago(dateStr) {
+  if (!dateStr) return null;
+  const today = chicagoTodayStr();
+  const a = new Date(today + "T12:00:00");
+  const b = new Date(dateStr + "T12:00:00");
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+function postDateWarnings(dateStr) {
+  const diff = daysFromTodayChicago(dateStr);
+  if (diff === null) return [];
+  if (diff < 0) return ["This date has already passed. Double-check before posting, because it may expire soon."];
+  if (diff === 0) return ["This shift is today. Double-check that the date is correct before posting."];
+  if (diff > 30) return ["This shift is more than 30 days away. Double-check that the date is correct before posting."];
+  return [];
+}
 
 // ── Styles ──────────────────────────────────────────────────
 const F={width:"100%",padding:"8px 12px",fontSize:14,borderRadius:12,border:"0.5px solid #c7ccd4",background:"#fff",color:"#172033",boxSizing:"border-box"};
@@ -96,6 +116,14 @@ function Empty({ children }) {
   );
 }
 
+function WarningBox({ children }) {
+  return (
+    <div style={{ borderRadius: 12, padding: "10px 12px", marginBottom: 12, fontSize: 13, background: "#FFF9E8", border: "0.5px solid #D9B451", color: "#8A5A00", lineHeight: 1.5 }}>
+      {children}
+    </div>
+  );
+}
+
 export default function ShiftBoard() {
   const sb = getSupabase();
 
@@ -129,11 +157,13 @@ export default function ShiftBoard() {
   const [pendingApply, setPendingApply] = useState(null);
   const [pendingApproval, setPendingApproval] = useState(null);
   const [deleteShiftId, setDeleteShiftId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   // Post form
   const [pf, setPf] = useState({name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:""});
   const [pfEmailOk, setPfEmailOk] = useState(false);
   const [pfErr, setPfErr] = useState("");
+  const [postWarnings, setPostWarnings] = useState([]);
 
   // Apply form
   const [aName, setAName] = useState("");
@@ -322,10 +352,11 @@ export default function ShiftBoard() {
   }, [sb, shifts]);
 
   // ── Post shift ────────────────────────────────────────
-  const openPostModal = () => { setPf({name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:""}); setPfEmailOk(false); setPfErr(""); setShowPostModal(true); };
+  const openPostModal = () => { setPf({name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:""}); setPfEmailOk(false); setPfErr(""); setPostWarnings([]); setShowPostModal(true); };
 
   const validatePost = async () => {
     const e = pf.email.trim().toLowerCase();
+    setPostWarnings([]);
     if (!pf.name.trim()||!e||!pf.date) { setPfErr("Fill in all fields."); return false; }
     if (!pfEmailOk) { setPfErr("Confirm that you used the correct email address."); return false; }
     if (pf.isSwap && pf.hasPreferred) { setPfErr("Choose either a swap request or a preferred applicant, not both."); return false; }
@@ -334,6 +365,10 @@ export default function ShiftBoard() {
     // Check duplicate
     const { count } = await sb.from("shifts").select("id",{count:"exact",head:true}).eq("status","open").eq("poster_email",e).eq("date",pf.date).eq("type",pf.type).eq("time",pf.time);
     if (count > 0) { setPfErr("This shift was already posted under this email. Please contact an LC if you think this is an issue."); return false; }
+    const warnings = [...postDateWarnings(pf.date)];
+    const { count: sameDayCount } = await sb.from("shifts").select("id",{count:"exact",head:true}).eq("status","open").eq("poster_email",e).eq("date",pf.date);
+    if ((sameDayCount || 0) > 0) warnings.push("You already have another open shift posted on this date. That may be fine, but double-check before posting.");
+    setPostWarnings(warnings);
     setPfErr(""); return true;
   };
 
@@ -422,16 +457,20 @@ export default function ShiftBoard() {
   // ── Delete (LC only, via API) ─────────────────────────
   const confirmDelete = async () => {
     if (!deleteShiftId) return;
-    setActionLoading(true);
+    const id = deleteShiftId;
+    setDeletingId(id);
     try {
-      const res = await fetch("/api/delete-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId: deleteShiftId }) });
+      const res = await fetch("/api/delete-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId: id }) });
       const data = await res.json().catch(() => ({ success: false, error: "Server returned an invalid response." }));
       if (!res.ok || !data.success) { showToast(data.error || "Delete failed."); setDeleteShiftId(null); return; }
-      setDeleteShiftId(null); setPage(1);
-      await refetchRef.current?.();
+      setDeleteShiftId(null);
+      setShifts(prev => prev.filter(s => s.id !== id));
+      setTotal(t => Math.max(0, t - 1));
+      fetchCounts();
       showToast("Open shift deleted");
+      refetchRef.current?.();
     } finally {
-      setActionLoading(false);
+      setDeletingId(null);
     }
   };
 
@@ -520,7 +559,7 @@ export default function ShiftBoard() {
         {isExpired && <div style={{ fontSize: 13, color: "#5e6675", marginTop: 8 }}><b style={{ color: "#172033" }}>Expired</b>, no sub was picked up.</div>}
 
         {/* LC delete button */}
-        {(lcReview || lcMode) && !closed && <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}><button onClick={() => setDeleteShiftId(shift.id)} style={{ ...btn2, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F" }}>Delete open shift</button></div>}
+        {(lcReview || lcMode) && !closed && <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}><button disabled={deletingId === shift.id} onClick={() => setDeleteShiftId(shift.id)} style={{ ...btn2, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: deletingId === shift.id ? 0.55 : 1 }}>{deletingId === shift.id ? "Deleting..." : "Delete open shift"}</button></div>}
 
         {/* LC applicant rows */}
         {lcReview && pending.length > 0 && (
@@ -743,6 +782,7 @@ export default function ShiftBoard() {
           </div>
         </div>
         <LabeledInput label="Date" type="date" value={pf.date} onChange={v => setPf(p=>({...p,date:v}))} />
+        {postDateWarnings(pf.date).map(w => <WarningBox key={w}>{w}</WarningBox>)}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Private note for LCs, optional</label>
           <textarea style={{ ...F, minHeight: 60, resize: "vertical" }} value={pf.note} onChange={e => setPf(p=>({...p,note:e.target.value}))} placeholder="Example: May go over time if this is not picked up. Not shown publicly." />
@@ -789,6 +829,7 @@ export default function ShiftBoard() {
       {postConfirmOpen && <Modal onClose={() => setPostConfirmOpen(false)} z={140}>
         <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Confirm shift post</h2>
         <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>Review this before it goes on the public board.</p>
+        {postWarnings.length > 0 && <div style={{ marginBottom: 12 }}>{postWarnings.map(w => <WarningBox key={w}>{w}</WarningBox>)}</div>}
         <SummaryBox rows={[["Name",pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Swap",pf.isSwap?`Yes, with ${pf.swapName}`:"No"],["Preferred",pf.hasPreferred?`Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
         <ModalActions disabled={actionLoading} onCancel={() => setPostConfirmOpen(false)} onConfirm={confirmPost} text="Post shift" />
       </Modal>}
@@ -920,7 +961,7 @@ export default function ShiftBoard() {
         return <Modal onClose={() => setDeleteShiftId(null)} z={150}>
           <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#8A1F1F" }}>Delete open shift?</h2>
           <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>This will delete {shift.poster_name}'s {shift.type} {shift.time} shift on {fmtDate(shift.date)} and remove {ac} application{ac===1?"":"s"}.</p>
-          <ModalActions disabled={actionLoading} onCancel={() => setDeleteShiftId(null)} onConfirm={confirmDelete} text="Delete shift" danger />
+          <ModalActions disabled={deletingId === deleteShiftId} onCancel={() => setDeleteShiftId(null)} onConfirm={confirmDelete} text={deletingId === deleteShiftId ? "Deleting..." : "Delete shift"} danger />
         </Modal>;
       })()}
 
