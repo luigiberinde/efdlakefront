@@ -173,6 +173,17 @@ export default function ShiftBoard() {
       visibleShifts = rpcResult?.shifts || [];
       finalTotal = rpcResult?.total || 0;
 
+    // ── CLOSED/HISTORY SHIFT-DATE SORT: future/today first, past dates last ──
+    } else if ((view === "board" && boardTab === "closed" && historySort === "date") || (view === "manager" && lcAuth && lcTab === "history" && historySort === "date")) {
+      const { data: rpcResult, error } = await sb.rpc("get_closed_shifts_by_shift_date", {
+        p_date: dateFilter || null,
+        p_limit: PS,
+        p_offset: from,
+      });
+      if (error) { console.error("Closed/history date-sort RPC error:", error); setLoading(false); return; }
+      visibleShifts = rpcResult?.shifts || [];
+      finalTotal = rpcResult?.total || 0;
+
     // ── ALL OTHER VIEWS: direct Supabase queries ────────
     } else {
       let query = sb.from("shifts").select("*", { count: "exact" });
