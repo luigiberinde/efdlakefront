@@ -1,27 +1,59 @@
+// middleware.js
+
 import { NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 
-const PUBLIC = ["/login", "/api/auth/", "/robots.txt", "/favicon.ico"];
-const secret = () => new TextEncoder().encode(process.env.JWT_SECRET || process.env.SESSION_SECRET || "dev-fallback-change-me-32chars!!");
+async function verifyJwtCookie(token) {
+  try {
+    if (!token || !process.env.JWT_SECRET) return null;
 
-export async function middleware(req) {
-  const { pathname } = req.nextUrl;
-  if (PUBLIC.some(p => pathname.startsWith(p)) || pathname.startsWith("/_next")) return NextResponse.next();
+    const secret = new TextEncoder().encode(process.env.JWT_SECRET);
+    const { payload } = await jwtVerify(token, secret);
 
-  // Accept either guard or LC session
-  const gt = req.cookies.get("guard_session")?.value;
-  const lt = req.cookies.get("lc_session")?.value;
-
-  for (const token of [gt, lt]) {
-    if (token) {
-      try { await jwtVerify(token, secret()); return NextResponse.next(); } catch {}
-    }
+    return payload || null;
+  } catch {
+    return null;
   }
-
-  const res = NextResponse.redirect(new URL("/login", req.url));
-  res.cookies.delete("guard_session");
-  res.cookies.delete("lc_session");
-  return res;
 }
 
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+export async function middleware(request) {
+  const { pathname } = request.nextUrl;
+
+  // Never gate API routes through the guard-login middleware.
+  // Individual API routes protect themselves.
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
+
+  // Let Next internals and static files through.
+  if (
+    pathname.startsWith("/_next/") ||
+    pathname === "/favicon.ico" ||
+    pathname === "/robots.txt"
+  ) {
+    return NextResponse.next();
+  }
+
+  // Allow the login page.
+  if (pathname === "/login") {
+    return NextResponse.next();
+  }
+
+  const guardCookie = request.cookies.get("guard_session")?.value;
+  const lcCookie = request.cookies.get("lc_session")?.value;
+
+  const guardSession = await verifyJwtCookie(guardCookie);
+  const lcSession = await verifyJwtCookie(lcCookie);
+
+  // LC session also counts as guard access.
+  if (guardSession || lcSession) {
+    return NextResponse.next();
+  }
+
+  const loginUrl = new URL("/login", request.url);
+  return NextResponse.redirect(loginUrl);
+}
+
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};
