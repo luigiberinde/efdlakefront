@@ -41,6 +41,20 @@ function postDateWarnings(dateStr) {
   return [];
 }
 
+function fmtVectorTime(t) {
+  if (!t) return "";
+  return new Date(t.replace(" ", "T")).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+function vectorShiftLabel(s) {
+  if (!s) return "Unknown Vector shift";
+  const bits = [];
+  if (s.shift_start && s.shift_end) bits.push(`${fmtVectorTime(s.shift_start)}–${fmtVectorTime(s.shift_end)}`);
+  if (s.assignment_name) bits.push(s.assignment_name);
+  if (s.shift_length) bits.push(`${s.shift_length} hrs`);
+  return bits.join(" · ") || `Vector shift ${s.shift_id}`;
+}
+function arr(v) { return Array.isArray(v) ? v : []; }
+
 // ── Styles ──────────────────────────────────────────────────
 const F={width:"100%",padding:"8px 12px",fontSize:14,borderRadius:12,border:"0.5px solid #c7ccd4",background:"#fff",color:"#172033",boxSizing:"border-box"};
 const B=(bg,c)=>({display:"inline-block",fontSize:11,fontWeight:700,padding:"2px 10px",borderRadius:12,background:bg,color:c,textTransform:"uppercase",letterSpacing:"0.5px"});
@@ -156,14 +170,18 @@ export default function ShiftBoard() {
   const [postConfirmOpen, setPostConfirmOpen] = useState(false);
   const [pendingApply, setPendingApply] = useState(null);
   const [pendingApproval, setPendingApproval] = useState(null);
+  const [approvalPreflight, setApprovalPreflight] = useState(null);
+  const [approvalPreflightLoading, setApprovalPreflightLoading] = useState(false);
   const [deleteShiftId, setDeleteShiftId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
 
   // Post form
-  const [pf, setPf] = useState({name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:""});
+  const emptyPostForm = {name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:"",lcOverride:false,lcShiftLength:"",lcShiftStart:"",lcShiftEnd:"",selectedVectorShiftId:"",selectedSwapVectorShiftId:""};
+  const [pf, setPf] = useState(emptyPostForm);
   const [pfEmailOk, setPfEmailOk] = useState(false);
   const [pfErr, setPfErr] = useState("");
   const [postWarnings, setPostWarnings] = useState([]);
+  const [postVectorResult, setPostVectorResult] = useState(null);
 
   // Apply form
   const [aName, setAName] = useState("");
@@ -352,41 +370,56 @@ export default function ShiftBoard() {
   }, [sb, shifts]);
 
   // ── Post shift ────────────────────────────────────────
-  const openPostModal = () => { setPf({name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:""}); setPfEmailOk(false); setPfErr(""); setPostWarnings([]); setShowPostModal(true); };
+  const openPostModal = () => { setPf(emptyPostForm); setPfEmailOk(false); setPfErr(""); setPostWarnings([]); setPostVectorResult(null); setShowPostModal(true); };
 
   const validatePost = async () => {
     const e = pf.email.trim().toLowerCase();
     setPostWarnings([]);
+    setPostVectorResult(null);
     if (!pf.name.trim()||!e||!pf.date) { setPfErr("Fill in all fields."); return false; }
     if (!pfEmailOk) { setPfErr("Confirm that you used the correct email address."); return false; }
     if (pf.isSwap && pf.hasPreferred) { setPfErr("Choose either a swap request or a preferred applicant, not both."); return false; }
     if (pf.isSwap && (!pf.swapName.trim()||!pf.swapEmail.trim()||!pf.swapDate)) { setPfErr("Fill in all swap partner details."); return false; }
     if (pf.hasPreferred && (!pf.prefName.trim()||!pf.prefEmail.trim()||!pf.prefReason.trim())) { setPfErr("Fill in the preferred applicant name, email, and reason."); return false; }
-    // Check duplicate
-    const { count } = await sb.from("shifts").select("id",{count:"exact",head:true}).eq("status","open").eq("poster_email",e).eq("date",pf.date).eq("type",pf.type).eq("time",pf.time);
-    if (count > 0) { setPfErr("This shift was already posted under this email. Please contact an LC if you think this is an issue."); return false; }
+    if (pf.lcOverride && !lcAuth) { setPfErr("Only LCs can post without Vector confirmation."); return false; }
+    if (pf.lcOverride && (!pf.lcShiftLength || Number(pf.lcShiftLength) <= 0)) { setPfErr("Enter the shift length for this LC-created open shift."); return false; }
+
     const warnings = [...postDateWarnings(pf.date)];
     const { count: sameDayCount } = await sb.from("shifts").select("id",{count:"exact",head:true}).eq("status","open").eq("poster_email",e).eq("date",pf.date);
     if ((sameDayCount || 0) > 0) warnings.push("You already have another open shift posted on this date. That may be fine, but double-check before posting.");
-    setPostWarnings(warnings);
-    setPfErr(""); return true;
+
+    setActionLoading(true);
+    try {
+      const res = await fetch("/api/post-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ ...pf, dryRun: true }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        if (data.needsShiftSelection) {
+          setPostVectorResult(data);
+          setPfErr(data.error || "Choose the exact Vector shift.");
+        } else {
+          setPfErr(data.error || "Vector could not validate this post.");
+          setPostVectorResult(data);
+        }
+        return false;
+      }
+      setPostVectorResult(data);
+      setPostWarnings([...(warnings || []), ...(data.warnings || [])]);
+      setPfErr("");
+      return true;
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const confirmPost = async () => {
     setActionLoading(true);
     try {
-      const e = pf.email.trim().toLowerCase();
-      const { error } = await sb.from("shifts").insert({
-        poster_name: pf.name.trim(), poster_email: e, type: pf.type, time: pf.time, date: pf.date,
-        private_lc_note: pf.note.trim(), is_swap: pf.isSwap,
-        swap_partner_name: pf.isSwap?pf.swapName.trim():null, swap_partner_email: pf.isSwap?pf.swapEmail.trim().toLowerCase():null,
-        swap_partner_type: pf.isSwap?pf.swapType:null, swap_partner_time: pf.isSwap?pf.swapTime:null, swap_partner_date: pf.isSwap?pf.swapDate:null,
-        has_preferred: pf.hasPreferred, preferred_name: pf.hasPreferred?pf.prefName.trim():null,
-        preferred_email: pf.hasPreferred?pf.prefEmail.trim().toLowerCase():null, preferred_reason: pf.hasPreferred?pf.prefReason.trim():null,
-      });
-      if (error) {
-        console.error("post shift error", error);
-        showToast(error.message?.includes("idx_unique_open_shift") ? "This shift was already posted." : `Error posting shift: ${error.message || "unknown"}`);
+      const res = await fetch("/api/post-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ ...pf, dryRun: false }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        showToast(data.error || "Error posting shift.");
+        setPostConfirmOpen(false);
+        setShowPostModal(true);
         return;
       }
       setPostConfirmOpen(false); setShowPostModal(false); setPage(1);
@@ -410,22 +443,33 @@ export default function ShiftBoard() {
     if (!pendingApply) return;
     setActionLoading(true);
     try {
-      const rows = pendingApply.shiftIds.map(id => ({
-        shift_id: id, applicant_name: pendingApply.name, applicant_email: pendingApply.email,
-        hours_after_shift: pendingApply.hours, applicant_note: pendingApply.note,
-      }));
-      const { error } = await sb.from("applications").insert(rows);
-      if (error) {
-        console.error("apply error", error);
-        showToast(error.message?.includes("idx_unique_pending_app") ? "You already applied." : `Error submitting: ${error.message || "unknown"}`);
+      const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ ...pendingApply, dryRun: false }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        showToast(data.error || "Error submitting application.");
         setPendingApply(null);
         return;
       }
       setPendingApply(null); setShowApplyModal(null); setPage(1);
       await refetchRef.current?.();
-      showToast(rows.length === 1 ? "Application submitted" : `Applications submitted to ${rows.length} shifts`);
+      showToast(pendingApply.shiftIds.length === 1 ? "Application submitted" : `Applications submitted to ${pendingApply.shiftIds.length} shifts`);
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const openApprovalModal = async (shiftId, appId) => {
+    setPendingApproval({ shiftId, appId });
+    setApprovalPreflight(null);
+    setApprovalPreflightLoading(true);
+    try {
+      const res = await fetch("/api/vector/approval-preflight", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId, appId }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      setApprovalPreflight(data);
+    } catch (err) {
+      setApprovalPreflight({ success:false, error:"Vector preflight failed." });
+    } finally {
+      setApprovalPreflightLoading(false);
     }
   };
 
@@ -439,10 +483,10 @@ export default function ShiftBoard() {
       if (!res.ok || !data.success) {
         console.error("approval failed", res.status, data);
         showToast(data.error || "Approval failed. Please refresh.");
-        setPendingApproval(null);
+        setPendingApproval(null); setApprovalPreflight(null);
         return;
       }
-      setPendingApproval(null); setPage(1);
+      setPendingApproval(null); setApprovalPreflight(null); setPage(1);
       await refetchRef.current?.();
       showToast(data.emailStatus === "not_configured" ? `Approved ${data.approved_name}. Email notifications not configured yet.` : `Approved ${data.approved_name}`);
     } catch (err) {
@@ -543,6 +587,10 @@ export default function ShiftBoard() {
         {(lcReview || lcMode) && shift.has_preferred && <InfoBlock badge="preferred applicant" gold><b>{shift.preferred_name}</b> was listed as preferred. Reason: {shift.preferred_reason}</InfoBlock>}
         {/* LC note */}
         {(lcReview || lcMode) && shift.private_lc_note && <InfoBlock badge="private LC note">{shift.private_lc_note}</InfoBlock>}
+        {(lcReview || lcMode) && shift.vector_source === "lc_override" && <InfoBlock badge="LC open shift" gold>No poster Vector shift attached. Length: {shift.lc_override_shift_length || shift.poster_vector_shift_length} hrs.</InfoBlock>}
+        {(lcReview || lcMode) && shift.vector_source !== "lc_override" && shift.poster_vector_shift_id && <InfoBlock badge="Vector shift">{shift.poster_vector_assignment_name || "Vector assignment"} · {shift.poster_vector_shift_length} hrs · ID {shift.poster_vector_shift_id}</InfoBlock>}
+        {(lcReview || lcMode) && arr(shift.vector_warnings).length > 0 && <WarningBox>{arr(shift.vector_warnings).join("; ")}</WarningBox>}
+        {(lcReview || lcMode) && arr(shift.preferred_vector_warnings).length > 0 && <WarningBox>{arr(shift.preferred_vector_warnings).join("; ")}</WarningBox>}
 
         {!closed && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, gap: 12 }}>
@@ -569,7 +617,7 @@ export default function ShiftBoard() {
               const st = getStats(app.applicant_email, shift.date);
               const isSP = shift.is_swap && app.applicant_email === shift.swap_partner_email;
               const isPref = shift.has_preferred && app.applicant_email === shift.preferred_email;
-              const isOt = Number(app.hours_after_shift) > 40;
+              const isOt = !!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40;
               return (
                 <div key={app.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, border: isSP?"1.5px solid #85B7EB":isPref?"1.5px solid #D9B451":"0.5px solid transparent" }}>
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -577,11 +625,13 @@ export default function ShiftBoard() {
                     <span style={{ fontSize: 11, color: "#8a92a0" }}>{st.approvedWeek} approved this week, {st.approvedAll} all time, {Math.max(0, st.pendingWeek - 1)} other app{Math.max(0, st.pendingWeek - 1) === 1 ? "" : "s"} still pending this week</span>
                     {isSP && <span style={B("#E6F1FB","#0C447C")}>swap partner</span>}
                     {isPref && <span style={B("#FFF2B8","#8A5A00")}>preferred</span>}
-                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>{app.hours_after_shift} hrs{isOt?" · OT":""}</span>
+                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>Vector {app.applicant_vector_projected_hours ?? app.hours_after_shift} hrs{isOt?" · OT":""}</span>
+                    {app.applicant_vector_week_hours != null && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Vector: {app.applicant_vector_week_hours} current hrs · {app.applicant_vector_projected_hours} projected hrs. Matched as {app.applicant_vector_full_name || app.applicant_name}.</span>}
+                    {arr(app.applicant_vector_warnings).length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Vector warning: {arr(app.applicant_vector_warnings).join("; ")}</span>}
                     {app.applicant_note && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Applicant note: {app.applicant_note}</span>}
                     {st.priorApprovals.length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A5A00", marginTop: 4 }}>Already approved for {st.priorApprovals.length} shift{st.priorApprovals.length===1?"":"s"} this week: {st.priorApprovals.map(p => `${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs reported)`).join("; ")}.</span>}
                   </div>
-                  <button onClick={() => setPendingApproval({ shiftId: shift.id, appId: app.id })} style={{ ...btnP, background: "#1D9E75", padding: "6px 14px", fontSize: 12, flexShrink: 0 }}>Approve</button>
+                  <button onClick={() => openApprovalModal(shift.id, app.id)} style={{ ...btnP, background: "#1D9E75", padding: "6px 14px", fontSize: 12, flexShrink: 0 }}>Approve</button>
                 </div>
               );
             })}
@@ -741,7 +791,7 @@ export default function ShiftBoard() {
         </>}
 
         {lcTab === "todo" && <>
-          <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px" }}>Update these in Target Solutions, then mark as done.</p>
+          <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px" }}>Update these in Vector manually, then mark as done.</p>
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
             <button style={pillS(todoTab==="pending")} onClick={() => setTodoTab("pending")}>Needs update ({todoCount})</button>
             <button style={pillS(todoTab==="done")} onClick={() => setTodoTab("done")}>Completed</button>
@@ -783,6 +833,18 @@ export default function ShiftBoard() {
         </div>
         <LabeledInput label="Date" type="date" value={pf.date} onChange={v => setPf(p=>({...p,date:v}))} />
         {postDateWarnings(pf.date).map(w => <WarningBox key={w}>{w}</WarningBox>)}
+        {lcAuth && <CheckBox checked={pf.lcOverride} onChange={v => { setPf(p=>({...p,lcOverride:v,selectedVectorShiftId:""})); setPostVectorResult(null); }}>
+          LC-created open shift, post without poster Vector confirmation.
+        </CheckBox>}
+        {pf.lcOverride && <div style={{ padding: 16, border: "0.5px solid #D9B451", borderRadius: 12, background: "#FFF9E8", marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#8A5A00", marginBottom: 12 }}>LC-created open shift details</div>
+          <LabeledInput label="Shift length in hours" type="number" value={pf.lcShiftLength} onChange={v => setPf(p=>({...p,lcShiftLength:v}))} placeholder="Example: 6" />
+          <div style={{ display: "flex", gap: 12 }}>
+            <LabeledInput label="Start time, optional" value={pf.lcShiftStart} onChange={v => setPf(p=>({...p,lcShiftStart:v}))} placeholder="Example: 8:45 AM" />
+            <LabeledInput label="End time, optional" value={pf.lcShiftEnd} onChange={v => setPf(p=>({...p,lcShiftEnd:v}))} placeholder="Example: 2:45 PM" />
+          </div>
+          <div style={{ fontSize: 12, color: "#8A5A00", lineHeight: 1.5 }}>This creates a Shift Swap posting only. It does not edit Vector.</div>
+        </div>}
         <div style={{ marginBottom: 16 }}>
           <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Private note for LCs, optional</label>
           <textarea style={{ ...F, minHeight: 60, resize: "vertical" }} value={pf.note} onChange={e => setPf(p=>({...p,note:e.target.value}))} placeholder="Example: May go over time if this is not picked up. Not shown publicly." />
@@ -821,6 +883,20 @@ export default function ShiftBoard() {
           <LabeledInput label="Their shift date" type="date" value={pf.swapDate} onChange={v => setPf(p=>({...p,swapDate:v}))} />
         </div>}
 
+        {postVectorResult?.needsShiftSelection && postVectorResult.selectionFor === "poster" && <div style={{ padding: 16, border: "0.5px solid #85B7EB", borderRadius: 12, background: "#E6F1FB", marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#0C447C", marginBottom: 8 }}>Choose exact Vector shift</div>
+          <select style={F} value={pf.selectedVectorShiftId} onChange={e => setPf(p=>({...p,selectedVectorShiftId:e.target.value}))}>
+            <option value="">Select a Vector shift...</option>
+            {arr(postVectorResult.shifts).map(s => <option key={s.shift_id} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}
+          </select>
+        </div>}
+        {postVectorResult?.needsShiftSelection && postVectorResult.selectionFor === "swap" && <div style={{ padding: 16, border: "0.5px solid #85B7EB", borderRadius: 12, background: "#E6F1FB", marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#0C447C", marginBottom: 8 }}>Choose exact swap partner Vector shift</div>
+          <select style={F} value={pf.selectedSwapVectorShiftId} onChange={e => setPf(p=>({...p,selectedSwapVectorShiftId:e.target.value}))}>
+            <option value="">Select their Vector shift...</option>
+            {arr(postVectorResult.shifts).map(s => <option key={s.shift_id} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}
+          </select>
+        </div>}
         {pfErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{pfErr}</p>}
         <ModalActions disabled={actionLoading} onCancel={() => setShowPostModal(false)} onConfirm={async () => { if (await validatePost()) setPostConfirmOpen(true); }} text="Review post" />
       </Modal>}
@@ -830,7 +906,7 @@ export default function ShiftBoard() {
         <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Confirm shift post</h2>
         <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>Review this before it goes on the public board.</p>
         {postWarnings.length > 0 && <div style={{ marginBottom: 12 }}>{postWarnings.map(w => <WarningBox key={w}>{w}</WarningBox>)}</div>}
-        <SummaryBox rows={[["Name",pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Swap",pf.isSwap?`Yes, with ${pf.swapName}`:"No"],["Preferred",pf.hasPreferred?`Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
+        <SummaryBox rows={[["Name",pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Vector",pf.lcOverride?`LC-created open shift · ${pf.lcShiftLength} hrs`:postVectorResult?.selectedPosterShift?vectorShiftLabel(postVectorResult.selectedPosterShift):"Confirmed"],["Swap",pf.isSwap?`Yes, with ${pf.swapName}`:"No"],["Preferred",pf.hasPreferred?`Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
         <ModalActions disabled={actionLoading} onCancel={() => setPostConfirmOpen(false)} onConfirm={confirmPost} text="Post shift" />
       </Modal>}
 
@@ -850,12 +926,9 @@ export default function ShiftBoard() {
           return null;
         };
 
-        const doValidate = () => {
-          const hrs = Number(aHours);
+        const doValidate = async () => {
           if (!aName.trim()||!email) { setAErr("Fill in your name and email."); return; }
           if (!aEmailOk) { setAErr("Confirm that you used the correct email address."); return; }
-          if (aHours===""||isNaN(hrs)||hrs<0) { setAErr("Enter a valid number of weekly hours."); return; }
-          if (!aConfirmed) { setAErr("You must confirm you're not already scheduled during this shift."); return; }
           if (shift.poster_email === email) { setAErr("You can't apply for your own shift."); return; }
 
           const getTargetShift = (id) => id === showApplyModal ? shift : identicalShifts.find(x => x.id === id);
@@ -864,13 +937,20 @@ export default function ShiftBoard() {
             return s && s.poster_email !== email;
           });
 
-          // Check special verifications across every selected target shift, including identical shifts
           const specialNeeded = validIds.filter(id => !!getSpecial(getTargetShift(id)));
           const missing = specialNeeded.filter(id => !aSpecialIds.includes(id));
           if (missing.length > 0) { setAErr("Confirm all special swap/preferred-applicant details before applying. If any are incorrect, contact an LC."); return; }
 
-          setAErr("");
-          setPendingApply({ shiftIds: validIds, name: aName.trim(), email, hours: hrs, note: aNote.trim() });
+          setActionLoading(true);
+          try {
+            const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftIds: validIds, name: aName.trim(), email, note: aNote.trim(), dryRun: true }) });
+            const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+            if (!res.ok || !data.success) { setAErr(data.error || "Vector blocked this application."); return; }
+            setAErr("");
+            setPendingApply({ shiftIds: validIds, name: aName.trim(), email, note: aNote.trim(), vectorReviews: data.reviews || [] });
+          } finally {
+            setActionLoading(false);
+          }
         };
 
         return <Modal onClose={() => setShowApplyModal(null)}>
@@ -883,8 +963,7 @@ export default function ShiftBoard() {
           <LabeledInput label="Your name (first and last)" value={aName} onChange={setAName} placeholder="Albert Einstein" />
           <LabeledInput label="Your email" hint="use the same email every time" type="email" value={aEmail} onChange={v => { setAEmail(v); setAEmailOk(false); setASpecialIds([]); }} placeholder="aeinstein@cityofevanston.org" />
           <CheckBox checked={aEmailOk} onChange={setAEmailOk}>I confirm this is the correct email address and that I will use this same email every time.</CheckBox>
-          <LabeledInput label="If you were to get this shift, how many total hours would this bring you to for this week?" type="number" value={aHours} onChange={setAHours} placeholder="Example: 32" />
-          <div style={{ fontSize: 12, color: "#8a92a0", margin: "-8px 0 16px" }}>Use the Monday–Sunday work week. Enter the total you would be at as of right now with this single shift included. Do not include any other pending shift applications unless they have already been approved. Anything over 40 will be flagged as OT for LCs.</div>
+          <InfoBlock badge="Vector hours">Vector will check whether you are already scheduled on this date and calculate your Monday–Sunday weekly hours. OT is flagged for LCs but does not automatically block your application.</InfoBlock>
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Note for LCs, optional</label>
             <textarea style={{ ...F, minHeight: 50, resize: "vertical" }} value={aNote} onChange={e => setANote(e.target.value)} placeholder="Example: I'm leaving for three weeks and won't be able to work afterward." />
@@ -923,7 +1002,7 @@ export default function ShiftBoard() {
               </div>;
             })}
 
-          <CheckBox checked={aConfirmed} onChange={setAConfirmed}>I confirm I am not already scheduled during this shift and can work it if selected.</CheckBox>
+          <CheckBox checked={aConfirmed} onChange={setAConfirmed}>I confirm I can work this shift if selected. Vector will check whether I am already scheduled on this date.</CheckBox>
           {aErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{aErr}</p>}
           <ModalActions disabled={actionLoading} onCancel={() => setShowApplyModal(null)} onConfirm={doValidate} text="Review application" />
         </Modal>;
@@ -933,7 +1012,7 @@ export default function ShiftBoard() {
       {pendingApply && <Modal onClose={() => setPendingApply(null)} z={140}>
         <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Confirm application</h2>
         <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>Make sure this is right before submitting.</p>
-        <SummaryBox rows={[["Name",pendingApply.name],["Email",pendingApply.email],["Weekly hours",`${pendingApply.hours}${pendingApply.hours>40?" · OT":""}`],["Note",pendingApply.note||"None"],["Applying to",pendingApply.shiftIds.length+" shift"+(pendingApply.shiftIds.length>1?"s":"")]]} />
+        <SummaryBox rows={[["Name",pendingApply.name],["Email",pendingApply.email],["Vector hours",pendingApply.vectorReviews?.[0]?.eligibility?.week ? `${pendingApply.vectorReviews[0].eligibility.week.vectorWeekHours} current · ${pendingApply.vectorReviews[0].eligibility.week.projectedAfterApproval} projected${pendingApply.vectorReviews[0].eligibility.week.wouldBeOT?" · OT":""}` : "Checked"],["Note",pendingApply.note||"None"],["Applying to",pendingApply.shiftIds.length+" shift"+(pendingApply.shiftIds.length>1?"s":"")]]} />
         <ModalActions disabled={actionLoading} onCancel={() => setPendingApply(null)} onConfirm={confirmApply} text="Submit application" />
       </Modal>}
 
@@ -943,13 +1022,26 @@ export default function ShiftBoard() {
         const shift = shifts.find(s => s.id === pendingApproval.shiftId);
         if (!app || !shift) return null;
         const st = getStats(app.applicant_email, shift.date);
-        const isOt = Number(app.hours_after_shift) > 40;
+        const isOt = !!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40;
         return <Modal onClose={() => setPendingApproval(null)} z={145}>
           <h2 style={{ fontSize: 18, margin: "0 0 8px", color: isOt ? "#8A1F1F" : "#172033" }}>Confirm approval</h2>
           <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>This will approve the applicant, close this shift, decline other applicants, and remove this applicant from other pending applications on the same day.</p>
-          {isOt && <div style={{ borderRadius: 12, padding: "10px 12px", marginBottom: 12, fontSize: 13, background: "#FFF6F6", border: "0.5px solid #D6A4A4", color: "#8A1F1F" }}><b>OT warning:</b> This applicant reported {app.hours_after_shift} hours after this shift.</div>}
-          <SummaryBox rows={[["Applicant",app.applicant_name],["Email",app.applicant_email],["Shift",`${fmtDate(shift.date)} ${shift.type} ${shift.time}`],["Posted by",shift.poster_name],["Hours",`${app.hours_after_shift}${isOt?" · OT":""}`],app.applicant_note?["App note",app.applicant_note]:null,["Approved this week",st.priorApprovals.length?st.priorApprovals.map(p=>`${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs)`).join("; "):"None"]].filter(Boolean)} />
-          <ModalActions disabled={actionLoading} onCancel={() => setPendingApproval(null)} onConfirm={confirmApproval} text={isOt?"Approve with OT":"Approve applicant"} danger={isOt} />
+          {isOt && <div style={{ borderRadius: 12, padding: "10px 12px", marginBottom: 12, fontSize: 13, background: "#FFF6F6", border: "0.5px solid #D6A4A4", color: "#8A1F1F" }}><b>OT warning:</b> Vector projects {app.applicant_vector_projected_hours ?? app.hours_after_shift} hours after this shift.</div>}
+          <SummaryBox rows={[["Applicant",app.applicant_name],["Email",app.applicant_email],["Shift",`${fmtDate(shift.date)} ${shift.type} ${shift.time}`],["Posted by",shift.poster_name],["Vector hours",app.applicant_vector_week_hours != null ? `${app.applicant_vector_week_hours} current · ${app.applicant_vector_projected_hours} projected${isOt?" · OT":""}` : `${app.hours_after_shift}${isOt?" · OT":""}`],app.applicant_note?["App note",app.applicant_note]:null,["Approved this week",st.priorApprovals.length?st.priorApprovals.map(p=>`${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs)`).join("; "):"None"]].filter(Boolean)} />
+          <div style={{ marginBottom: 12 }}>
+            {approvalPreflightLoading && <InfoBlock badge="Vector preflight">Checking Vector now...</InfoBlock>}
+            {approvalPreflight && !approvalPreflight.success && <WarningBox>{approvalPreflight.error || "Vector preflight failed."}</WarningBox>}
+            {approvalPreflight?.success && <>
+              {arr(approvalPreflight.blockers).length > 0 && <WarningBox><b>Vector blockers:</b> {arr(approvalPreflight.blockers).join("; ")}</WarningBox>}
+              {arr(approvalPreflight.warnings).length > 0 && <WarningBox><b>Vector warnings:</b> {arr(approvalPreflight.warnings).join("; ")}</WarningBox>}
+              <InfoBlock badge="Vector sync" gold>{approvalPreflight.syncDisabledReason || "Vector sync is not enabled yet."}</InfoBlock>
+            </>}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 }}>
+            <button onClick={() => setPendingApproval(null)} style={btn2}>Cancel</button>
+            <button disabled style={{ ...btnP, opacity: 0.45, background: "#1a2744" }}>Approve + Sync in Vector</button>
+            <button disabled={actionLoading || approvalPreflightLoading} onClick={confirmApproval} style={{ ...btnP, background: isOt ? "#8A1F1F" : "#1D9E75" }}>Approve in Shift Swap only, do not update Vector automatically</button>
+          </div>
         </Modal>;
       })()}
 
@@ -966,7 +1058,7 @@ export default function ShiftBoard() {
       })()}
 
       <footer style={{ marginTop: 40, paddingTop: 20, borderTop: "0.5px solid #e0e3e8", color: "#8a92a0", fontSize: 11, lineHeight: 1.6, textAlign: "center" }}>
-        Lakefront Shift Swap maintained by Luigi Berinde. For questions, contact an LC.<br/>Internal scheduling aid only. Final schedule changes must be reflected in Target Solutions.
+        Lakefront Shift Swap maintained by Luigi Berinde. For questions, contact an LC.<br/>Internal scheduling aid only. Final schedule changes must be reflected in Vector.
       </footer>
 
       {toast && <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#1a2744", color: "#fff", padding: "10px 24px", borderRadius: 12, fontSize: 14, fontWeight: 700, zIndex: 200 }}>{toast}</div>}
