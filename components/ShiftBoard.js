@@ -174,6 +174,9 @@ export default function ShiftBoard() {
   const [approvalPreflightLoading, setApprovalPreflightLoading] = useState(false);
   const [deleteShiftId, setDeleteShiftId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
+  const [applyActionPrompt, setApplyActionPrompt] = useState(null);
+  const [deleteApplicationPrompt, setDeleteApplicationPrompt] = useState(null);
+  const [deletingApplicationId, setDeletingApplicationId] = useState(null);
 
   // Post form
   const emptyPostForm = {name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:"",lcOverride:false,lcShiftLength:"",lcShiftStart:"",lcShiftEnd:"",selectedVectorShiftId:"",selectedSwapVectorShiftId:""};
@@ -434,7 +437,7 @@ export default function ShiftBoard() {
   const [identicalShifts, setIdenticalShifts] = useState([]);
 
   const openApplyModal = async (id) => {
-    setAName(""); setAEmail(""); setAEmailOk(false); setAHours(""); setANote(""); setAConfirmed(false); setAIdentical(false); setAIdenticalIds([]); setASpecialIds([]); setAErr(""); setShowApplyModal(id);
+    setAName(""); setAEmail(""); setAEmailOk(false); setAHours(""); setANote(""); setAConfirmed(false); setAIdentical(false); setAIdenticalIds([]); setASpecialIds([]); setAErr(""); setApplyActionPrompt(null); setShowApplyModal(id);
     const ident = await getIdenticalOpen(id);
     setIdenticalShifts(ident);
   };
@@ -446,6 +449,7 @@ export default function ShiftBoard() {
       const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ ...pendingApply, dryRun: false }) });
       const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
       if (!res.ok || !data.success) {
+        if (handleApplyBlockedResponse(data, pendingApply.email)) { setPendingApply(null); return; }
         showToast(data.error || "Error submitting application.");
         setPendingApply(null);
         return;
@@ -453,6 +457,63 @@ export default function ShiftBoard() {
       setPendingApply(null); setShowApplyModal(null); setPage(1);
       await refetchRef.current?.();
       showToast(pendingApply.shiftIds.length === 1 ? "Application submitted" : `Applications submitted to ${pendingApply.shiftIds.length} shifts`);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleApplyBlockedResponse = (data, fallbackEmail = aEmail.trim().toLowerCase()) => {
+    if (data?.code === "SELF_APPLICATION" && data.canDeleteShift) {
+      setApplyActionPrompt({
+        kind: "self_shift",
+        shiftId: data.shiftId,
+        email: fallbackEmail,
+        shift: data.shift,
+        message: data.error || "This is your own shift. Delete this posting instead?",
+      });
+      setAErr("");
+      return true;
+    }
+    if (data?.code === "DUPLICATE_APPLICATION" && data.canDeleteApplication) {
+      setApplyActionPrompt({
+        kind: "duplicate_application",
+        applicationId: data.applicationId,
+        email: fallbackEmail,
+        shiftId: data.shiftId,
+        shift: data.shift,
+        message: data.error || "You already applied for this shift. Delete your existing application instead?",
+      });
+      setAErr("");
+      return true;
+    }
+    return false;
+  };
+
+  const deleteOwnShiftFromPrompt = async () => {
+    if (!applyActionPrompt?.shiftId || !applyActionPrompt?.email) return;
+    setActionLoading(true);
+    try {
+      const res = await fetch("/api/delete-own-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId: applyActionPrompt.shiftId, email: applyActionPrompt.email }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not delete this shift."); return; }
+      setApplyActionPrompt(null); setPendingApply(null); setShowApplyModal(null); setPage(1);
+      await refetchRef.current?.();
+      showToast("Your shift posting was deleted");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const deleteApplicationFromPrompt = async () => {
+    if (!applyActionPrompt?.applicationId || !applyActionPrompt?.email) return;
+    setActionLoading(true);
+    try {
+      const res = await fetch("/api/delete-application", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ applicationId: applyActionPrompt.applicationId, email: applyActionPrompt.email }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not delete this application."); return; }
+      setApplyActionPrompt(null); setPendingApply(null); setShowApplyModal(null); setPage(1);
+      await refetchRef.current?.();
+      showToast("Your application was deleted");
     } finally {
       setActionLoading(false);
     }
@@ -515,6 +576,22 @@ export default function ShiftBoard() {
       refetchRef.current?.();
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  const confirmDeleteApplication = async () => {
+    if (!deleteApplicationPrompt?.applicationId) return;
+    const appId = deleteApplicationPrompt.applicationId;
+    setDeletingApplicationId(appId);
+    try {
+      const res = await fetch("/api/delete-application", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ applicationId: appId }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not delete application."); return; }
+      setDeleteApplicationPrompt(null);
+      await refetchRef.current?.();
+      showToast("Application deleted");
+    } finally {
+      setDeletingApplicationId(null);
     }
   };
 
@@ -631,7 +708,10 @@ export default function ShiftBoard() {
                     {app.applicant_note && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Applicant note: {app.applicant_note}</span>}
                     {st.priorApprovals.length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A5A00", marginTop: 4 }}>Already approved for {st.priorApprovals.length} shift{st.priorApprovals.length===1?"":"s"} this week: {st.priorApprovals.map(p => `${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs reported)`).join("; ")}.</span>}
                   </div>
-                  <button onClick={() => openApprovalModal(shift.id, app.id)} style={{ ...btnP, background: "#1D9E75", padding: "6px 14px", fontSize: 12, flexShrink: 0 }}>Approve</button>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button disabled={deletingApplicationId === app.id} onClick={() => setDeleteApplicationPrompt({ applicationId: app.id, applicantName: app.applicant_name, applicantEmail: app.applicant_email, shift })} style={{ ...btn2, padding: "6px 12px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: deletingApplicationId === app.id ? 0.55 : 1 }}>{deletingApplicationId === app.id ? "Deleting..." : "Delete app"}</button>
+                    <button onClick={() => openApprovalModal(shift.id, app.id)} style={{ ...btnP, background: "#1D9E75", padding: "6px 14px", fontSize: 12 }}>Approve</button>
+                  </div>
                 </div>
               );
             })}
@@ -929,7 +1009,17 @@ export default function ShiftBoard() {
         const doValidate = async () => {
           if (!aName.trim()||!email) { setAErr("Fill in your name and email."); return; }
           if (!aEmailOk) { setAErr("Confirm that you used the correct email address."); return; }
-          if (shift.poster_email === email) { setAErr("You can't apply for your own shift."); return; }
+          if (shift.poster_email === email) {
+            setApplyActionPrompt({
+              kind: "self_shift",
+              shiftId: shift.id,
+              email,
+              shift: { id: shift.id, poster_name: shift.poster_name, poster_email: shift.poster_email, date: shift.date, type: shift.type, time: shift.time },
+              message: "This is your own shift. You cannot apply to it, but you can delete the posting instead.",
+            });
+            setAErr("");
+            return;
+          }
 
           const getTargetShift = (id) => id === showApplyModal ? shift : identicalShifts.find(x => x.id === id);
           const validIds = allTargetIds.filter(id => {
@@ -945,7 +1035,11 @@ export default function ShiftBoard() {
           try {
             const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftIds: validIds, name: aName.trim(), email, note: aNote.trim(), dryRun: true }) });
             const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
-            if (!res.ok || !data.success) { setAErr(data.error || "Vector blocked this application."); return; }
+            if (!res.ok || !data.success) {
+              if (handleApplyBlockedResponse(data, email)) return;
+              setAErr(data.error || "Vector blocked this application.");
+              return;
+            }
             setAErr("");
             setPendingApply({ shiftIds: validIds, name: aName.trim(), email, note: aNote.trim(), vectorReviews: data.reviews || [] });
           } finally {
@@ -1044,6 +1138,26 @@ export default function ShiftBoard() {
           </div>
         </Modal>;
       })()}
+
+      {/* ── SELF / DUPLICATE APPLICATION PROMPTS ──────── */}
+      {applyActionPrompt && <Modal onClose={() => setApplyActionPrompt(null)} z={155}>
+        <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#8A1F1F" }}>{applyActionPrompt.kind === "self_shift" ? "This is your own shift" : "You already applied"}</h2>
+        <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>{applyActionPrompt.message}</p>
+        {applyActionPrompt.shift && <SummaryBox rows={[["Shift",`${fmtDate(applyActionPrompt.shift.date)} ${applyActionPrompt.shift.type} ${applyActionPrompt.shift.time}`],["Posted by",applyActionPrompt.shift.poster_name || "Unknown"]]} />}
+        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
+          <button onClick={() => setApplyActionPrompt(null)} style={btn2}>Cancel</button>
+          {applyActionPrompt.kind === "self_shift" && <button disabled={actionLoading} onClick={deleteOwnShiftFromPrompt} style={{ ...btnP, background: "#8A1F1F" }}>Delete my shift posting</button>}
+          {applyActionPrompt.kind === "duplicate_application" && <button disabled={actionLoading} onClick={deleteApplicationFromPrompt} style={{ ...btnP, background: "#8A1F1F" }}>Delete my application</button>}
+        </div>
+      </Modal>}
+
+      {/* ── LC DELETE APPLICATION CONFIRMATION ─────────── */}
+      {deleteApplicationPrompt && <Modal onClose={() => setDeleteApplicationPrompt(null)} z={152}>
+        <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#8A1F1F" }}>Delete application?</h2>
+        <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>This only deletes this application. It does not delete the shift.</p>
+        <SummaryBox rows={[["Applicant",deleteApplicationPrompt.applicantName],["Email",deleteApplicationPrompt.applicantEmail],["Shift",deleteApplicationPrompt.shift ? `${fmtDate(deleteApplicationPrompt.shift.date)} ${deleteApplicationPrompt.shift.type} ${deleteApplicationPrompt.shift.time}` : "Selected shift"]]} />
+        <ModalActions disabled={deletingApplicationId === deleteApplicationPrompt.applicationId} onCancel={() => setDeleteApplicationPrompt(null)} onConfirm={confirmDeleteApplication} text={deletingApplicationId === deleteApplicationPrompt.applicationId ? "Deleting..." : "Delete application"} danger />
+      </Modal>}
 
       {/* ── DELETE CONFIRMATION ───────────────────────── */}
       {deleteShiftId && (() => {

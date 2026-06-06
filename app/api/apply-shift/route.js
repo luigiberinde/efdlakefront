@@ -30,8 +30,56 @@ export async function POST(req) {
 
     for (const shift of shifts) {
       if (normalizeEmail(shift.poster_email) === applicantEmail) {
-        return NextResponse.json({ success: false, error: "You can't apply for your own shift." }, { status: 400 });
+        return NextResponse.json({
+          success: false,
+          code: "SELF_APPLICATION",
+          error: "This is your own shift. You cannot apply to it, but you can delete the posting instead.",
+          canDeleteShift: true,
+          shiftId: shift.id,
+          shift: {
+            id: shift.id,
+            poster_name: shift.poster_name,
+            poster_email: shift.poster_email,
+            date: shift.date,
+            type: shift.type,
+            time: shift.time,
+          },
+        }, { status: 409 });
       }
+
+      const { data: existingApp, error: existingErr } = await sb
+        .from("applications")
+        .select("id, shift_id, applicant_email, applicant_name, status, applied_at")
+        .eq("shift_id", shift.id)
+        .eq("status", "pending")
+        .ilike("applicant_email", applicantEmail)
+        .maybeSingle();
+
+      if (existingErr) {
+        console.error("duplicate application lookup error", existingErr);
+        return NextResponse.json({ success: false, error: "Could not check existing applications." }, { status: 500 });
+      }
+
+      if (existingApp) {
+        return NextResponse.json({
+          success: false,
+          code: "DUPLICATE_APPLICATION",
+          error: "You already applied for this shift. You can delete your existing application instead.",
+          canDeleteApplication: true,
+          applicationId: existingApp.id,
+          shiftId: shift.id,
+          application: existingApp,
+          shift: {
+            id: shift.id,
+            poster_name: shift.poster_name,
+            poster_email: shift.poster_email,
+            date: shift.date,
+            type: shift.type,
+            time: shift.time,
+          },
+        }, { status: 409 });
+      }
+
       const len = shiftLengthFor(shift);
       if (!len || len <= 0) {
         return NextResponse.json({ success: false, error: "This shift is missing a Vector/LC shift length. Contact an LC." }, { status: 400 });
@@ -67,7 +115,15 @@ export async function POST(req) {
     const { error } = await sb.from("applications").insert(rows);
     if (error) {
       console.error("apply-shift insert error", error);
-      return NextResponse.json({ success: false, error: error.message?.includes("idx_unique_pending_app") ? "You already applied." : error.message || "Error submitting application." }, { status: 500 });
+      if (error.message?.includes("idx_unique_pending_app")) {
+        return NextResponse.json({
+          success: false,
+          code: "DUPLICATE_APPLICATION",
+          error: "You already applied for this shift. Refresh the page if you want to delete your application.",
+          canDeleteApplication: true,
+        }, { status: 409 });
+      }
+      return NextResponse.json({ success: false, error: error.message || "Error submitting application." }, { status: 500 });
     }
 
     return NextResponse.json({ success: true, reviews });
