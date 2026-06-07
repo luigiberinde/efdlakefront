@@ -7,6 +7,18 @@ function shiftLengthFor(shift) {
   return Number(shift.poster_vector_shift_length || shift.lc_override_shift_length || 0);
 }
 
+function sameShiftBucket(a, b) {
+  return (
+    String(a?.date || "") === String(b?.date || "") &&
+    String(a?.type || "") === String(b?.type || "") &&
+    String(a?.time || "") === String(b?.time || "")
+  );
+}
+
+function isRequestedSwapPartner(shift, applicantEmail) {
+  return Boolean(shift?.is_swap) && normalizeEmail(shift?.swap_partner_email) === applicantEmail;
+}
+
 export async function POST(req) {
   try {
     const body = await req.json();
@@ -84,8 +96,46 @@ export async function POST(req) {
       if (!len || len <= 0) {
         return NextResponse.json({ success: false, error: "This shift is missing a Vector/LC shift length. Contact an LC." }, { status: 400 });
       }
-      const eligibility = await checkApplicationEligibility({ email: applicantEmail, name: applicantName, shiftDate: shift.date, postedShiftLength: len, publicStrictEmail: true });
-      reviews.push({ shift_id: shift.id, shift, eligibility });
+
+      const requestedSwapPartner = isRequestedSwapPartner(shift, applicantEmail);
+      const postedShiftBucket = { date: shift.date, type: shift.type, time: shift.time };
+      const swapPartnerBucket = { date: shift.swap_partner_date, type: shift.swap_partner_type, time: shift.swap_partner_time };
+
+      if (requestedSwapPartner && sameShiftBucket(postedShiftBucket, swapPartnerBucket)) {
+        return NextResponse.json({
+          success: false,
+          code: "INVALID_SAME_SHIFT_SWAP",
+          error: "This swap is for the same shift date/type/time. Same-day swaps must be for different shifts, like Early for Late.",
+          blockedShiftId: shift.id,
+        }, { status: 400 });
+      }
+
+      const allowSameDayConflictForSwap =
+        requestedSwapPartner &&
+        String(shift.swap_partner_date || "") === String(shift.date || "") &&
+        !sameShiftBucket(postedShiftBucket, swapPartnerBucket);
+
+      const eligibility = await checkApplicationEligibility({
+        email: applicantEmail,
+        name: applicantName,
+        shiftDate: shift.date,
+        postedShiftLength: len,
+        publicStrictEmail: true,
+        swapApplication: requestedSwapPartner ? {
+          isRequestedSwapPartner: true,
+          allowSameDayConflict: allowSameDayConflictForSwap,
+          postedShiftDate: shift.date,
+          postedShiftType: shift.type,
+          postedShiftTime: shift.time,
+          postedVectorShiftId: shift.poster_vector_shift_id,
+          swapPartnerDate: shift.swap_partner_date,
+          swapPartnerType: shift.swap_partner_type,
+          swapPartnerTime: shift.swap_partner_time,
+          swapPartnerVectorShiftId: shift.swap_partner_vector_shift_id,
+          swapPartnerShiftLength: Number(shift.swap_partner_vector_shift_length || 0),
+        } : null,
+      });
+      reviews.push({ shift_id: shift.id, shift, eligibility, requestedSwapPartner });
       if (!eligibility.allowed) {
         return NextResponse.json({ success: false, error: eligibility.message || "Vector blocked this application.", blockedShiftId: shift.id, eligibility, reviews }, { status: 400 });
       }
@@ -103,10 +153,13 @@ export async function POST(req) {
         applicant_vector_week_hours: eligibility.week?.vectorWeekHours ?? null,
         applicant_vector_projected_hours: eligibility.week?.projectedAfterApproval ?? null,
         applicant_vector_would_be_ot: eligibility.week?.wouldBeOT ?? false,
-        applicant_vector_same_day_conflict: false,
-        applicant_vector_check_status: "clear",
+        applicant_vector_same_day_conflict: Boolean(eligibility.sameDay?.alreadyScheduled && !eligibility.sameDay?.ignoredForSwap),
+        applicant_vector_check_status: eligibility.sameDay?.ignoredForSwap ? "swap_same_day_allowed" : "clear",
         applicant_vector_checked_at: new Date().toISOString(),
-        applicant_vector_warnings: eligibility.week?.wouldBeOT ? ["Projected Vector hours exceed 40."] : [],
+        applicant_vector_warnings: [
+          ...(eligibility.week?.wouldBeOT ? ["Projected Vector hours exceed 40."] : []),
+          ...(eligibility.sameDay?.ignoredForSwap ? ["Requested swap partner is already scheduled that date, but this is allowed because the swap is for a different shift."] : []),
+        ],
       });
     }
 
