@@ -172,6 +172,8 @@ export default function ShiftBoard() {
   const [pendingApproval, setPendingApproval] = useState(null);
   const [approvalPreflight, setApprovalPreflight] = useState(null);
   const [approvalPreflightLoading, setApprovalPreflightLoading] = useState(false);
+  const [currentVectorHoursByApp, setCurrentVectorHoursByApp] = useState({});
+  const [currentVectorHoursLoading, setCurrentVectorHoursLoading] = useState({});
   const [deleteShiftId, setDeleteShiftId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [applyActionPrompt, setApplyActionPrompt] = useState(null);
@@ -519,6 +521,34 @@ export default function ShiftBoard() {
     }
   };
 
+  const checkCurrentVectorHours = async (shiftId, appId) => {
+    setCurrentVectorHoursLoading(prev => ({ ...prev, [appId]: true }));
+    try {
+      const res = await fetch("/api/vector/current-application-hours", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ shiftId, appId }),
+      });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        showToast(data.error || "Could not check current Vector hours.");
+        setCurrentVectorHoursByApp(prev => ({ ...prev, [appId]: data }));
+        return data;
+      }
+      setCurrentVectorHoursByApp(prev => ({ ...prev, [appId]: data }));
+      const projected = data.current?.projectedAfterApproval;
+      showToast(projected != null ? `Current Vector projected hours: ${projected}` : "Current Vector hours checked");
+      return data;
+    } catch (err) {
+      const data = { success:false, error:"Could not check current Vector hours." };
+      setCurrentVectorHoursByApp(prev => ({ ...prev, [appId]: data }));
+      showToast(data.error);
+      return data;
+    } finally {
+      setCurrentVectorHoursLoading(prev => ({ ...prev, [appId]: false }));
+    }
+  };
+
   const openApprovalModal = async (shiftId, appId) => {
     setPendingApproval({ shiftId, appId });
     setApprovalPreflight(null);
@@ -694,7 +724,14 @@ export default function ShiftBoard() {
               const st = getStats(app.applicant_email, shift.date);
               const isSP = shift.is_swap && app.applicant_email === shift.swap_partner_email;
               const isPref = shift.has_preferred && app.applicant_email === shift.preferred_email;
-              const isOt = !!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40;
+              const liveHours = currentVectorHoursByApp[app.id];
+              const appCurrentHours = app.applicant_vector_week_hours;
+              const appProjectedHours = app.applicant_vector_projected_hours ?? app.hours_after_shift;
+              const liveCurrentHours = liveHours?.current?.vectorWeekHours;
+              const liveProjectedHours = liveHours?.current?.projectedAfterApproval;
+              const liveOt = !!liveHours?.current?.wouldBeOT;
+              const isOt = liveHours?.success ? liveOt : (!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40);
+              const displayProjected = liveHours?.success && liveProjectedHours != null ? liveProjectedHours : appProjectedHours;
               return (
                 <div key={app.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, border: isSP?"1.5px solid #85B7EB":isPref?"1.5px solid #D9B451":"0.5px solid transparent" }}>
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -702,13 +739,16 @@ export default function ShiftBoard() {
                     <span style={{ fontSize: 11, color: "#8a92a0" }}>{st.approvedWeek} approved this week, {st.approvedAll} all time, {Math.max(0, st.pendingWeek - 1)} other app{Math.max(0, st.pendingWeek - 1) === 1 ? "" : "s"} still pending this week</span>
                     {isSP && <span style={B("#E6F1FB","#0C447C")}>swap partner</span>}
                     {isPref && <span style={B("#FFF2B8","#8A5A00")}>preferred</span>}
-                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>Vector {app.applicant_vector_projected_hours ?? app.hours_after_shift} hrs{isOt?" · OT":""}</span>
-                    {app.applicant_vector_week_hours != null && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Vector: {app.applicant_vector_week_hours} current hrs · {app.applicant_vector_projected_hours} projected hrs. Matched as {app.applicant_vector_full_name || app.applicant_name}.</span>}
+                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>Vector projected {displayProjected ?? "?"} hrs{isOt?" · OT":""}</span>
+                    {appCurrentHours != null && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>At application: hours current {appCurrentHours} · hours projected {appProjectedHours}. Matched as {app.applicant_vector_full_name || app.applicant_name}.</span>}
+                    {liveHours?.success && liveHours.current && <span style={{ width: "100%", fontSize: 11, color: liveOt ? "#8A1F1F" : "#27500A", marginTop: 4 }}>Checked now: hours current {liveCurrentHours} · hours projected {liveProjectedHours}{liveOt ? " · OT" : ""}.</span>}
+                    {liveHours && !liveHours.success && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Current Vector hours check failed: {liveHours.error || "Unknown error"}</span>}
                     {arr(app.applicant_vector_warnings).length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Vector warning: {arr(app.applicant_vector_warnings).join("; ")}</span>}
                     {app.applicant_note && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Applicant note: {app.applicant_note}</span>}
                     {st.priorApprovals.length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A5A00", marginTop: 4 }}>Already approved for {st.priorApprovals.length} shift{st.priorApprovals.length===1?"":"s"} this week: {st.priorApprovals.map(p => `${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs reported)`).join("; ")}.</span>}
                   </div>
                   <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <button disabled={!!currentVectorHoursLoading[app.id]} onClick={() => checkCurrentVectorHours(shift.id, app.id)} style={{ ...btn2, padding: "6px 12px", fontSize: 12, border: "0.5px solid #9BB7D4", background: "#F6FAFF", color: "#0C447C", opacity: currentVectorHoursLoading[app.id] ? 0.55 : 1 }}>{currentVectorHoursLoading[app.id] ? "Checking..." : "Check current hours"}</button>
                     <button disabled={deletingApplicationId === app.id} onClick={() => setDeleteApplicationPrompt({ applicationId: app.id, applicantName: app.applicant_name, applicantEmail: app.applicant_email, shift })} style={{ ...btn2, padding: "6px 12px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: deletingApplicationId === app.id ? 0.55 : 1 }}>{deletingApplicationId === app.id ? "Deleting..." : "Delete app"}</button>
                     <button onClick={() => openApprovalModal(shift.id, app.id)} style={{ ...btnP, background: "#1D9E75", padding: "6px 14px", fontSize: 12 }}>Approve</button>
                   </div>
@@ -1116,18 +1156,24 @@ export default function ShiftBoard() {
         const shift = shifts.find(s => s.id === pendingApproval.shiftId);
         if (!app || !shift) return null;
         const st = getStats(app.applicant_email, shift.date);
-        const isOt = !!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40;
+        const preflightHours = approvalPreflight?.checks?.hours;
+        const currentHours = preflightHours?.current;
+        const applicationHours = preflightHours?.applicationTime;
+        const isOt = currentHours ? !!currentHours.wouldBeOT : (!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40);
         return <Modal onClose={() => setPendingApproval(null)} z={145}>
           <h2 style={{ fontSize: 18, margin: "0 0 8px", color: isOt ? "#8A1F1F" : "#172033" }}>Confirm approval</h2>
           <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>This will approve the applicant, close this shift, decline other applicants, and remove this applicant from other pending applications on the same day.</p>
-          {isOt && <div style={{ borderRadius: 12, padding: "10px 12px", marginBottom: 12, fontSize: 13, background: "#FFF6F6", border: "0.5px solid #D6A4A4", color: "#8A1F1F" }}><b>OT warning:</b> Vector projects {app.applicant_vector_projected_hours ?? app.hours_after_shift} hours after this shift.</div>}
-          <SummaryBox rows={[["Applicant",app.applicant_name],["Email",app.applicant_email],["Shift",`${fmtDate(shift.date)} ${shift.type} ${shift.time}`],["Posted by",shift.poster_name],["Vector hours",app.applicant_vector_week_hours != null ? `${app.applicant_vector_week_hours} current · ${app.applicant_vector_projected_hours} projected${isOt?" · OT":""}` : `${app.hours_after_shift}${isOt?" · OT":""}`],app.applicant_note?["App note",app.applicant_note]:null,["Approved this week",st.priorApprovals.length?st.priorApprovals.map(p=>`${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs)`).join("; "):"None"]].filter(Boolean)} />
+          {isOt && <div style={{ borderRadius: 12, padding: "10px 12px", marginBottom: 12, fontSize: 13, background: "#FFF6F6", border: "0.5px solid #D6A4A4", color: "#8A1F1F" }}><b>OT warning:</b> Vector projects {currentHours?.projectedAfterApproval ?? app.applicant_vector_projected_hours ?? app.hours_after_shift} hours after this shift.</div>}
+          <SummaryBox rows={[["Applicant",app.applicant_name],["Email",app.applicant_email],["Shift",`${fmtDate(shift.date)} ${shift.type} ${shift.time}`],["Posted by",shift.poster_name],["Hours at application",app.applicant_vector_week_hours != null ? `${app.applicant_vector_week_hours} current · ${app.applicant_vector_projected_hours} projected${app.applicant_vector_would_be_ot?" · OT":""}` : `${app.hours_after_shift}${app.applicant_vector_would_be_ot?" · OT":""}`],currentHours?["Hours checked now",`${currentHours.vectorWeekHours} current · ${currentHours.projectedAfterApproval} projected${currentHours.wouldBeOT?" · OT":""}`]:["Hours checked now",approvalPreflightLoading?"Checking Vector...":"Not checked yet"],app.applicant_note?["App note",app.applicant_note]:null,["Approved this week",st.priorApprovals.length?st.priorApprovals.map(p=>`${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs)`).join("; "):"None"]].filter(Boolean)} />
           <div style={{ marginBottom: 12 }}>
             {approvalPreflightLoading && <InfoBlock badge="Vector preflight">Checking Vector now...</InfoBlock>}
             {approvalPreflight && !approvalPreflight.success && <WarningBox>{approvalPreflight.error || "Vector preflight failed."}</WarningBox>}
             {approvalPreflight?.success && <>
               {arr(approvalPreflight.blockers).length > 0 && <WarningBox><b>Vector blockers:</b> {arr(approvalPreflight.blockers).join("; ")}</WarningBox>}
               {arr(approvalPreflight.warnings).length > 0 && <WarningBox><b>Vector warnings:</b> {arr(approvalPreflight.warnings).join("; ")}</WarningBox>}
+              {approvalPreflight.checks?.hours?.current && <InfoBlock badge="Current Vector hours">
+                Hours current now: <b>{approvalPreflight.checks.hours.current.vectorWeekHours}</b> · Hours projected if approved now: <b>{approvalPreflight.checks.hours.current.projectedAfterApproval}</b>{approvalPreflight.checks.hours.current.wouldBeOT ? " · OT" : ""}.
+              </InfoBlock>}
               <InfoBlock badge="Vector sync" gold>{approvalPreflight.syncDisabledReason || "Vector sync is not enabled yet."}</InfoBlock>
             </>}
           </div>

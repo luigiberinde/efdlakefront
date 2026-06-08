@@ -7,6 +7,41 @@ function lenForShift(shift) {
   return Number(shift.poster_vector_shift_length || shift.lc_override_shift_length || 0);
 }
 
+function sameShiftBucket(a, b) {
+  return (
+    String(a?.date || "") === String(b?.date || "") &&
+    String(a?.type || "") === String(b?.type || "") &&
+    String(a?.time || "") === String(b?.time || "")
+  );
+}
+
+function buildSwapApplicationContext(shift, applicantEmail) {
+  const isRequestedSwapPartner =
+    Boolean(shift?.is_swap) &&
+    String(applicantEmail || "").toLowerCase() === String(shift?.swap_partner_email || "").toLowerCase();
+
+  if (!isRequestedSwapPartner) return null;
+
+  const postedShiftBucket = { date: shift.date, type: shift.type, time: shift.time };
+  const swapPartnerBucket = { date: shift.swap_partner_date, type: shift.swap_partner_type, time: shift.swap_partner_time };
+
+  return {
+    isRequestedSwapPartner: true,
+    allowSameDayConflict:
+      String(shift.swap_partner_date || "") === String(shift.date || "") &&
+      !sameShiftBucket(postedShiftBucket, swapPartnerBucket),
+    postedShiftDate: shift.date,
+    postedShiftType: shift.type,
+    postedShiftTime: shift.time,
+    postedVectorShiftId: shift.poster_vector_shift_id,
+    swapPartnerDate: shift.swap_partner_date,
+    swapPartnerType: shift.swap_partner_type,
+    swapPartnerTime: shift.swap_partner_time,
+    swapPartnerVectorShiftId: shift.swap_partner_vector_shift_id,
+    swapPartnerShiftLength: Number(shift.swap_partner_vector_shift_length || 0),
+  };
+}
+
 export async function POST(req) {
   const err = await requireLC();
   if (err) return NextResponse.json(err, { status: err.status || 401 });
@@ -52,17 +87,46 @@ export async function POST(req) {
     }
 
     if (shiftLength) {
-      const eligibility = await checkApplicationEligibility({ email: app.applicant_email, name: app.applicant_name, shiftDate: shift.date, postedShiftLength: shiftLength, publicStrictEmail: true });
+      const swapApplication = buildSwapApplicationContext(shift, app.applicant_email);
+      const eligibility = await checkApplicationEligibility({
+        email: app.applicant_email,
+        name: app.applicant_name,
+        shiftDate: shift.date,
+        postedShiftLength: shiftLength,
+        publicStrictEmail: true,
+        swapApplication,
+      });
+
       checks.applicant = eligibility;
+      checks.hours = {
+        checkedAt: new Date().toISOString(),
+        applicationTime: {
+          vectorWeekHours: app.applicant_vector_week_hours,
+          projectedAfterApproval: app.applicant_vector_projected_hours ?? app.hours_after_shift,
+          wouldBeOT: Boolean(app.applicant_vector_would_be_ot),
+          checkedAt: app.applicant_vector_checked_at,
+        },
+        current: eligibility.week ? {
+          vectorWeekHours: eligibility.week.vectorWeekHours,
+          postedShiftLength: eligibility.week.postedShiftLength,
+          swapReplacementShiftLength: eligibility.week.swapReplacementShiftLength,
+          projectedAfterApproval: eligibility.week.projectedAfterApproval,
+          wouldBeOT: eligibility.week.wouldBeOT,
+          weekStart: eligibility.week.weekStart,
+          weekEndExclusive: eligibility.week.weekEndExclusive,
+        } : null,
+      };
+
       if (!eligibility.allowed) blockers.push(eligibility.message || "Applicant is no longer eligible by Vector.");
-      if (eligibility.week?.wouldBeOT) warnings.push("Projected Vector hours exceed 40.");
+      if (eligibility.week?.wouldBeOT) warnings.push("Current projected Vector hours exceed 40.");
+      if (eligibility.sameDay?.ignoredForSwap) warnings.push("Same-day Vector schedule conflict is allowed because this is the requested swap partner applying for a different shift.");
     }
 
     return NextResponse.json({
       success: true,
       shiftId,
       appId,
-      canApproveShiftSwapOnly: blockers.length === 0 || true,
+      canApproveShiftSwapOnly: true,
       canSyncVector: false,
       syncDisabledReason: "Vector sync writes are not enabled yet.",
       blockers,
