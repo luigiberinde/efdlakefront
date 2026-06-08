@@ -3,6 +3,7 @@ import { requireLC } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { buildApprovalNotifications } from "@/lib/notifications";
 import { isEmailEnabled, sendNotificationEmail } from "@/lib/gmail";
+import { refreshCurrentHoursForApplicantWeek } from "@/lib/current-hours-refresh";
 
 async function insertNotificationRow(sb, row) {
   const { error } = await sb.from("notifications").insert(row);
@@ -87,6 +88,25 @@ export async function POST(req) {
 
   if (applicationContextError) {
     console.error("approval application context error", applicationContextError);
+  }
+
+  let currentHoursRefresh = null;
+  try {
+    if (applicationContext?.applicant_email && shiftContext?.date) {
+      currentHoursRefresh = await refreshCurrentHoursForApplicantWeek({
+        sb,
+        applicantEmail: applicationContext.applicant_email,
+        applicantName: applicationContext.applicant_vector_full_name || applicationContext.applicant_name,
+        shiftDate: shiftContext.date,
+        includeStatuses: ["pending"],
+      });
+    }
+  } catch (refreshErr) {
+    console.error("post-approval current hours refresh error", refreshErr);
+    currentHoursRefresh = {
+      success: false,
+      error: refreshErr.message || "Could not refresh other pending applications after approval.",
+    };
   }
 
   const notificationContext = {
@@ -213,5 +233,6 @@ export async function POST(req) {
       failed: failedCount,
       results: emailResults,
     },
+    currentHoursRefresh,
   });
 }

@@ -1,47 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireLC } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
-import { checkApplicationEligibility, normalizeEmail } from "@/lib/vector-core";
-
-function shiftLengthFor(shift) {
-  return Number(shift?.poster_vector_shift_length || shift?.lc_override_shift_length || 0);
-}
-
-function sameShiftBucket(a, b) {
-  return (
-    String(a?.date || "") === String(b?.date || "") &&
-    String(a?.type || "") === String(b?.type || "") &&
-    String(a?.time || "") === String(b?.time || "")
-  );
-}
-
-function isRequestedSwapPartner(shift, applicantEmail) {
-  return Boolean(shift?.is_swap) && normalizeEmail(shift?.swap_partner_email) === normalizeEmail(applicantEmail);
-}
-
-function buildSwapApplicationContext(shift, applicantEmail) {
-  const requestedSwapPartner = isRequestedSwapPartner(shift, applicantEmail);
-  if (!requestedSwapPartner) return null;
-
-  const postedShiftBucket = { date: shift.date, type: shift.type, time: shift.time };
-  const swapPartnerBucket = { date: shift.swap_partner_date, type: shift.swap_partner_type, time: shift.swap_partner_time };
-
-  return {
-    isRequestedSwapPartner: true,
-    allowSameDayConflict:
-      String(shift.swap_partner_date || "") === String(shift.date || "") &&
-      !sameShiftBucket(postedShiftBucket, swapPartnerBucket),
-    postedShiftDate: shift.date,
-    postedShiftType: shift.type,
-    postedShiftTime: shift.time,
-    postedVectorShiftId: shift.poster_vector_shift_id,
-    swapPartnerDate: shift.swap_partner_date,
-    swapPartnerType: shift.swap_partner_type,
-    swapPartnerTime: shift.swap_partner_time,
-    swapPartnerVectorShiftId: shift.swap_partner_vector_shift_id,
-    swapPartnerShiftLength: Number(shift.swap_partner_vector_shift_length || 0),
-  };
-}
+import { refreshCurrentHoursForApplicantWeek, shiftLengthForCurrentHours } from "@/lib/current-hours-refresh";
 
 export async function POST(req) {
   const authErr = await requireLC();
@@ -77,7 +37,7 @@ export async function POST(req) {
       return NextResponse.json({ success: false, error: "Application not found." }, { status: 404 });
     }
 
-    const shiftLength = shiftLengthFor(shift);
+    const shiftLength = shiftLengthForCurrentHours(shift);
     if (!shiftLength || shiftLength <= 0) {
       return NextResponse.json({
         success: false,
@@ -85,42 +45,41 @@ export async function POST(req) {
       }, { status: 400 });
     }
 
-    const swapApplication = buildSwapApplicationContext(shift, app.applicant_email);
-
-    const eligibility = await checkApplicationEligibility({
-      email: app.applicant_email,
-      name: app.applicant_name,
+    const refresh = await refreshCurrentHoursForApplicantWeek({
+      sb,
+      applicantEmail: app.applicant_email,
+      applicantName: app.applicant_vector_full_name || app.applicant_name,
       shiftDate: shift.date,
-      postedShiftLength: shiftLength,
-      publicStrictEmail: true,
-      swapApplication,
+      includeStatuses: ["pending"],
     });
+
+    if (!refresh.success) {
+      return NextResponse.json(refresh, { status: 400 });
+    }
+
+    const selected = refresh.updatedApplications.find((x) => Number(x.appId) === Number(appId)) || null;
 
     return NextResponse.json({
       success: true,
-      checkedAt: new Date().toISOString(),
+      checkedAt: refresh.checkedAt,
       shiftId,
       appId,
       shiftLength,
-      applicationTime: {
+      vectorUser: refresh.vectorUser,
+      currentWeekHours: refresh.currentWeekHours,
+      weekStart: refresh.weekStart,
+      weekEndExclusive: refresh.weekEndExclusive,
+      applicationTime: selected?.applicationTime || {
         vectorWeekHours: app.applicant_vector_week_hours,
         projectedAfterApproval: app.applicant_vector_projected_hours ?? app.hours_after_shift,
         wouldBeOT: Boolean(app.applicant_vector_would_be_ot),
         checkedAt: app.applicant_vector_checked_at,
       },
-      current: eligibility.week ? {
-        vectorWeekHours: eligibility.week.vectorWeekHours,
-        postedShiftLength: eligibility.week.postedShiftLength,
-        swapReplacementShiftLength: eligibility.week.swapReplacementShiftLength,
-        projectedAfterApproval: eligibility.week.projectedAfterApproval,
-        wouldBeOT: eligibility.week.wouldBeOT,
-        weekStart: eligibility.week.weekStart,
-        weekEndExclusive: eligibility.week.weekEndExclusive,
-      } : null,
-      eligibility,
+      current: selected?.current || null,
+      updatedApplications: refresh.updatedApplications,
       warnings: [
-        ...(eligibility.week?.wouldBeOT ? ["Projected current Vector hours exceed 40."] : []),
-        ...(eligibility.sameDay?.ignoredForSwap ? ["Same-day conflict ignored because this is the requested swap partner applying for a different shift."] : []),
+        ...((selected?.current?.wouldBeOT) ? ["Projected current Vector hours exceed 40."] : []),
+        ...(refresh.updatedApplications.length > 1 ? [`Updated current Vector hours for ${refresh.updatedApplications.length} pending applications in this same week.`] : []),
       ],
     });
   } catch (err) {

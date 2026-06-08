@@ -535,9 +535,24 @@ export default function ShiftBoard() {
         setCurrentVectorHoursByApp(prev => ({ ...prev, [appId]: data }));
         return data;
       }
-      setCurrentVectorHoursByApp(prev => ({ ...prev, [appId]: data }));
+      setCurrentVectorHoursByApp(prev => {
+        const next = { ...prev, [appId]: data };
+        (data.updatedApplications || []).forEach(u => {
+          next[u.appId] = {
+            success: true,
+            checkedAt: data.checkedAt,
+            applicationTime: u.applicationTime,
+            current: u.current,
+            updatedFromWeekCheck: true,
+          };
+        });
+        return next;
+      });
       const projected = data.current?.projectedAfterApproval;
-      showToast(projected != null ? `Current Vector projected hours: ${projected}` : "Current Vector hours checked");
+      const updatedCount = data.updatedApplications?.length || 0;
+      showToast(projected != null
+        ? `Current Vector projected hours: ${projected}${updatedCount > 1 ? ` · updated ${updatedCount} apps this week` : ""}`
+        : "Current Vector hours checked");
       return data;
     } catch (err) {
       const data = { success:false, error:"Could not check current Vector hours." };
@@ -727,11 +742,22 @@ export default function ShiftBoard() {
               const liveHours = currentVectorHoursByApp[app.id];
               const appCurrentHours = app.applicant_vector_week_hours;
               const appProjectedHours = app.applicant_vector_projected_hours ?? app.hours_after_shift;
+              const savedCurrentHours = app.applicant_vector_current_week_hours;
+              const savedProjectedHours = app.applicant_vector_current_projected_hours;
+              const savedCurrentCheckedAt = app.applicant_vector_current_checked_at;
+              const savedCurrentOt = !!app.applicant_vector_current_would_be_ot;
               const liveCurrentHours = liveHours?.current?.vectorWeekHours;
               const liveProjectedHours = liveHours?.current?.projectedAfterApproval;
+              const liveCheckedAt = liveHours?.current?.checkedAt || liveHours?.checkedAt;
               const liveOt = !!liveHours?.current?.wouldBeOT;
-              const isOt = liveHours?.success ? liveOt : (!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40);
-              const displayProjected = liveHours?.success && liveProjectedHours != null ? liveProjectedHours : appProjectedHours;
+              const hasLiveCurrent = liveHours?.success && liveHours.current;
+              const hasSavedCurrent = savedCurrentHours != null && savedProjectedHours != null;
+              const effectiveCurrentHours = hasLiveCurrent ? liveCurrentHours : savedCurrentHours;
+              const effectiveProjectedHours = hasLiveCurrent ? liveProjectedHours : savedProjectedHours;
+              const effectiveCheckedAt = hasLiveCurrent ? liveCheckedAt : savedCurrentCheckedAt;
+              const effectiveOt = hasLiveCurrent ? liveOt : savedCurrentOt;
+              const isOt = hasLiveCurrent || hasSavedCurrent ? effectiveOt : (!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40);
+              const displayProjected = effectiveProjectedHours != null ? effectiveProjectedHours : appProjectedHours;
               return (
                 <div key={app.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, border: isSP?"1.5px solid #85B7EB":isPref?"1.5px solid #D9B451":"0.5px solid transparent" }}>
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
@@ -739,9 +765,10 @@ export default function ShiftBoard() {
                     <span style={{ fontSize: 11, color: "#8a92a0" }}>{st.approvedWeek} approved this week, {st.approvedAll} all time, {Math.max(0, st.pendingWeek - 1)} other app{Math.max(0, st.pendingWeek - 1) === 1 ? "" : "s"} still pending this week</span>
                     {isSP && <span style={B("#E6F1FB","#0C447C")}>swap partner</span>}
                     {isPref && <span style={B("#FFF2B8","#8A5A00")}>preferred</span>}
-                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>Vector projected {displayProjected ?? "?"} hrs{isOt?" · OT":""}</span>
+                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>Hours projected {displayProjected ?? "?"} hrs{effectiveCurrentHours != null ? ` · current ${effectiveCurrentHours} hrs` : ""}{isOt?" · OT":""}</span>
                     {appCurrentHours != null && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>At application: hours current {appCurrentHours} · hours projected {appProjectedHours}. Matched as {app.applicant_vector_full_name || app.applicant_name}.</span>}
-                    {liveHours?.success && liveHours.current && <span style={{ width: "100%", fontSize: 11, color: liveOt ? "#8A1F1F" : "#27500A", marginTop: 4 }}>Checked now: hours current {liveCurrentHours} · hours projected {liveProjectedHours}{liveOt ? " · OT" : ""}.</span>}
+                    {(hasLiveCurrent || hasSavedCurrent) && <span style={{ width: "100%", fontSize: 11, color: effectiveOt ? "#8A1F1F" : "#27500A", marginTop: 4 }}>Last checked: hours current {effectiveCurrentHours} · hours projected {effectiveProjectedHours}{effectiveOt ? " · OT" : ""}{effectiveCheckedAt ? ` · checked ${timeAgo(effectiveCheckedAt)}` : ""}.</span>}
+                    {liveHours?.updatedFromWeekCheck && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Updated because another application for this person was checked in the same work week.</span>}
                     {liveHours && !liveHours.success && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Current Vector hours check failed: {liveHours.error || "Unknown error"}</span>}
                     {arr(app.applicant_vector_warnings).length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Vector warning: {arr(app.applicant_vector_warnings).join("; ")}</span>}
                     {app.applicant_note && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Applicant note: {app.applicant_note}</span>}
