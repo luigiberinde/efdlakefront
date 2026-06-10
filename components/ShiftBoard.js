@@ -56,7 +56,7 @@ function vectorShiftLabel(s) {
 function arr(v) { return Array.isArray(v) ? v : []; }
 
 // ── Styles ──────────────────────────────────────────────────
-const F={width:"100%",padding:"8px 12px",fontSize:14,borderRadius:12,border:"0.5px solid #c7ccd4",background:"#fff",color:"#172033",boxSizing:"border-box"};
+const F={width:"100%",padding:"8px 12px",fontSize:16,borderRadius:12,border:"0.5px solid #c7ccd4",background:"#fff",color:"#172033",boxSizing:"border-box"};
 const B=(bg,c)=>({display:"inline-block",fontSize:11,fontWeight:700,padding:"2px 10px",borderRadius:12,background:bg,color:c,textTransform:"uppercase",letterSpacing:"0.5px"});
 const tabS=a=>({padding:"12px 18px",fontSize:14,fontWeight:a?700:500,color:a?"#172033":"#5e6675",background:"none",border:"none",borderBottom:a?"2px solid #172033":"2px solid transparent",cursor:"pointer",marginBottom:-1});
 const pillS=a=>({padding:"8px 14px",fontSize:13,fontWeight:a?700:500,color:a?"#172033":"#5e6675",background:a?"#f6f7f9":"none",border:`0.5px solid ${a?"#e0e3e8":"transparent"}`,borderRadius:12,cursor:"pointer"});
@@ -90,11 +90,11 @@ function ModalActions({ onCancel, onConfirm, text, danger = false, disabled = fa
   );
 }
 
-function LabeledInput({ label, hint, value, onChange, placeholder, type = "text" }) {
+function LabeledInput({ label, hint, value, onChange, placeholder, type = "text", ...props }) {
   return (
     <div style={{ marginBottom: 16 }}>
       <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>{label}{hint && <span style={{ fontWeight: 500, color: "#8a92a0" }}> — {hint}</span>}</label>
-      <input style={F} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} />
+      <input style={F} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} {...props} />
     </div>
   );
 }
@@ -136,6 +136,147 @@ function WarningBox({ children }) {
       {children}
     </div>
   );
+}
+
+function OTChip() {
+  return <span style={{ display: "inline-block", fontSize: 10, fontWeight: 800, padding: "1px 8px", borderRadius: 10, background: "#FCEBEB", color: "#8A1F1F", letterSpacing: "0.5px" }}>OT</span>;
+}
+
+function HoursRow({ label, current, projected, ot, note }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(96px,118px) 1fr 1fr 34px", gap: 6, alignItems: "center", fontSize: 12, padding: "4px 0" }}>
+      <span style={{ color: "#8a92a0", fontWeight: 600 }}>{label}</span>
+      {note
+        ? <span style={{ gridColumn: "2 / 5", color: "#8a92a0" }}>{note}</span>
+        : <>
+            <span>{current ?? "—"}</span>
+            <span style={{ fontWeight: 700 }}>{projected ?? "—"}</span>
+            <span>{ot ? <OTChip /> : null}</span>
+          </>}
+    </div>
+  );
+}
+
+function HoursTable({ children }) {
+  return (
+    <div style={{ width: "100%", background: "#fff", border: "0.5px solid #e0e3e8", borderRadius: 10, padding: "6px 10px", marginTop: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(96px,118px) 1fr 1fr 34px", gap: 6, fontSize: 10, fontWeight: 800, color: "#8a92a0", textTransform: "uppercase", letterSpacing: "0.5px", padding: "2px 0 4px", borderBottom: "0.5px solid #eef0f3" }}>
+        <span>Vector hours</span><span>Current</span><span>Projected</span><span />
+      </div>
+      {children}
+    </div>
+  );
+}
+
+const STATUS_CHIP = {
+  open: ["#E6F1FB", "#0C447C"],
+  taken: ["#EAF3DE", "#27500A"],
+  expired: ["#EFEFF2", "#555B66"],
+  pending: ["#FFF2B8", "#8A5A00"],
+  approved: ["#EAF3DE", "#27500A"],
+  declined: ["#EFEFF2", "#555B66"],
+};
+function StatusChip({ status }) {
+  const [bg, color] = STATUS_CHIP[status] || ["#f6f7f9", "#5e6675"];
+  return <span style={B(bg, color)}>{status}</span>;
+}
+
+// Remembered name/email so people stop retyping their identity on every post/application.
+function loadIdentity() {
+  try { return JSON.parse(localStorage.getItem("lss-identity") || "null") || { name: "", email: "" }; }
+  catch { return { name: "", email: "" }; }
+}
+function saveIdentity(name, email) {
+  try { localStorage.setItem("lss-identity", JSON.stringify({ name: String(name || "").trim(), email: String(email || "").trim().toLowerCase() })); } catch {}
+}
+function normEmail(value) { return String(value || "").trim().toLowerCase(); }
+function emailMatches(a, b) { return normEmail(a) === normEmail(b); }
+
+function canonicalAppName(app) { return app?.applicant_vector_full_name || app?.applicant_name || "Unknown applicant"; }
+function canonicalPosterName(shift) { return shift?.poster_vector_full_name || shift?.poster_name || "Unknown poster"; }
+function canonicalSwapName(shift) { return shift?.swap_partner_vector_full_name || shift?.swap_partner_name || "Swap partner"; }
+function canonicalPreferredName(shift) { return shift?.preferred_vector_full_name || shift?.preferred_name || "Preferred applicant"; }
+function vectorShiftText(s) {
+  if (!s) return "";
+  return [s.assignment_name, s.work_type_name, ...(Array.isArray(s.group_labels) ? s.group_labels : [])].filter(Boolean).join(" ").toLowerCase();
+}
+function earlyLateMismatchWarning(selectedTime, vectorShift) {
+  const txt = vectorShiftText(vectorShift);
+  if (!txt) return null;
+  const hasEarly = /\bearly\b/.test(txt);
+  const hasLate = /\blate\b/.test(txt);
+  if (selectedTime === "early" && hasLate && !hasEarly) return "Vector looks like this may be a Late shift, but you selected Early. Double-check before posting. You can continue if Vector labels are weird.";
+  if (selectedTime === "late" && hasEarly && !hasLate) return "Vector looks like this may be an Early shift, but you selected Late. Double-check before posting. You can continue if Vector labels are weird.";
+  return null;
+}
+function swapTimeMismatchNotice(selectedTime, vectorShift) {
+  const warning = earlyLateMismatchWarning(selectedTime, vectorShift);
+  if (!warning) return null;
+  const actual = inferTimeFromVectorShift(vectorShift);
+  return {
+    warning,
+    actual,
+    selected: selectedTime === "late" ? "Late" : "Early",
+    actualLabel: actual === "late" ? "Late" : "Early",
+    vectorLabel: vectorShiftLabel(vectorShift),
+  };
+}
+function inferTimeFromVectorShift(s) {
+  const txt = vectorShiftText(s);
+  const hasEarly = /\bearly\b/.test(txt);
+  const hasLate = /\blate\b/.test(txt);
+  if (hasLate && !hasEarly) return "late";
+  return "early";
+}
+function inferTypeFromVectorShift(s) {
+  const txt = vectorShiftText(s);
+  if (/\bmanager\b|\bmgr\b/.test(txt)) return "manager";
+  return "guard";
+}
+function vectorShiftDate(s) {
+  return s?.day_date || String(s?.shift_start || s?.assignment_start || "").slice(0, 10);
+}
+function bulkShiftKey(s, index = "") {
+  return String(s?.__bulk_key || [
+    vectorShiftDate(s) || "",
+    s?.shift_start || "",
+    s?.shift_end || "",
+    s?.assignment_id || "",
+    s?.shift_id || "",
+    s?.work_type_id || "",
+    index,
+  ].join("::"));
+}
+
+function storedVectorShiftLabel(row, prefix = "poster") {
+  if (!row) return "Vector shift not attached";
+  const assignment = row[`${prefix}_vector_assignment_name`];
+  const workType = row[`${prefix}_vector_work_type_name`];
+  const labels = arr(row[`${prefix}_vector_group_labels`]).join(", ");
+  const start = row[`${prefix}_vector_shift_start`];
+  const end = row[`${prefix}_vector_shift_end`];
+  const length = row[`${prefix}_vector_shift_length`];
+  const id = row[`${prefix}_vector_shift_id`];
+  const bits = [];
+  if (start && end) bits.push(`${fmtVectorTime(start)}–${fmtVectorTime(end)}`);
+  if (assignment) bits.push(assignment);
+  if (workType) bits.push(workType);
+  if (labels) bits.push(labels);
+  if (length != null) bits.push(`${length} hrs`);
+  if (id) bits.push(`ID ${id}`);
+  return bits.filter(Boolean).join(" · ") || "Vector shift not attached";
+}
+function shortVectorShiftLabel(row, prefix = "poster") {
+  const assignment = row?.[`${prefix}_vector_assignment_name`];
+  const workType = row?.[`${prefix}_vector_work_type_name`];
+  const start = row?.[`${prefix}_vector_shift_start`];
+  const end = row?.[`${prefix}_vector_shift_end`];
+  const fallback = `${row?.[`${prefix === "poster" ? "type" : "swap_partner_type"}`] || "shift"} ${row?.[`${prefix === "poster" ? "time" : "swap_partner_time"}`] || ""}`.trim();
+  return [start && end ? `${fmtVectorTime(start)}–${fmtVectorTime(end)}` : "", assignment || workType || fallback].filter(Boolean).join(" · ");
+}
+function dateInRange(date, start, end) {
+  if (!date || !start || !end) return false;
+  return String(date) >= String(start) && String(date) <= String(end);
 }
 
 export default function ShiftBoard() {
@@ -180,6 +321,34 @@ export default function ShiftBoard() {
   const [deleteApplicationPrompt, setDeleteApplicationPrompt] = useState(null);
   const [deletingApplicationId, setDeletingApplicationId] = useState(null);
 
+  // My activity lookup
+  const [showMineModal, setShowMineModal] = useState(false);
+  const [mineEmail, setMineEmail] = useState("");
+  const [mineLoading, setMineLoading] = useState(false);
+  const [mine, setMine] = useState(null);
+  const [mineBusyId, setMineBusyId] = useState(null);
+
+
+  // Notify-me + bulk-post UX
+  const emptyNotifyForm = { name: "", email: "", type: "any", time: "any", startDate: "", endDate: "" };
+  const [showNotifyModal, setShowNotifyModal] = useState(false);
+  const [nf, setNf] = useState(emptyNotifyForm);
+  const [nfEmailOk, setNfEmailOk] = useState(false);
+  const [nfErr, setNfErr] = useState("");
+  const [notifyLoading, setNotifyLoading] = useState(false);
+
+  const newBulkRow = () => ({ tempId: `${Date.now()}-${Math.random().toString(16).slice(2)}`, type: "guard", time: "early", date: "", note: "", selectedVectorShiftId: "" });
+  const [showBulkPostModal, setShowBulkPostModal] = useState(false);
+  const [bulkName, setBulkName] = useState("");
+  const [bulkEmail, setBulkEmail] = useState("");
+  const [bulkEmailOk, setBulkEmailOk] = useState(false);
+  const [bulkRows, setBulkRows] = useState([newBulkRow()]);
+  const [bulkResults, setBulkResults] = useState({});
+  const [bulkStage, setBulkStage] = useState("edit");
+  const [bulkErr, setBulkErr] = useState("");
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [lcSearch, setLcSearch] = useState("");
+
   // Post form
   const emptyPostForm = {name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:"",lcOverride:false,lcShiftLength:"",lcShiftStart:"",lcShiftEnd:"",selectedVectorShiftId:"",selectedSwapVectorShiftId:""};
   const [pf, setPf] = useState(emptyPostForm);
@@ -187,6 +356,28 @@ export default function ShiftBoard() {
   const [pfErr, setPfErr] = useState("");
   const [postWarnings, setPostWarnings] = useState([]);
   const [postVectorResult, setPostVectorResult] = useState(null);
+  const [singleSwapMismatchOk, setSingleSwapMismatchOk] = useState(false);
+
+  // Step-by-step post flow + multi-post from actual Vector schedule.
+  const [postStep, setPostStep] = useState("identity"); // identity | mode | single | multi
+  const [singleVectorShifts, setSingleVectorShifts] = useState([]);
+  const [singleSelectedKey, setSingleSelectedKey] = useState("");
+  const [singleVectorLoading, setSingleVectorLoading] = useState(false);
+  const [singleVectorErr, setSingleVectorErr] = useState("");
+  const [multiMode, setMultiMode] = useState(false);
+  const [multiStartDate, setMultiStartDate] = useState(chicagoTodayStr());
+  const [multiEndDate, setMultiEndDate] = useState(() => {
+    const d = new Date(chicagoTodayStr() + "T12:00:00");
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().slice(0, 10);
+  });
+  const [multiLoading, setMultiLoading] = useState(false);
+  const [multiErr, setMultiErr] = useState("");
+  const [multiShifts, setMultiShifts] = useState([]);
+  const [multiSelected, setMultiSelected] = useState({});
+  const [multiStage, setMultiStage] = useState("pick"); // pick | configure | review
+  const [multiConfigIndex, setMultiConfigIndex] = useState(0);
+  const [multiDryRunResults, setMultiDryRunResults] = useState([]);
 
   // Apply form
   const [aName, setAName] = useState("");
@@ -202,6 +393,11 @@ export default function ShiftBoard() {
 
   const showToast = m => { setToast(m); setTimeout(()=>setToast(null),3000); };
   const refetchRef = useRef(null);
+  const restoreScrollSoon = useCallback((y) => {
+    if (typeof window === "undefined" || typeof y !== "number") return;
+    requestAnimationFrame(() => window.scrollTo({ top: y, left: 0, behavior: "auto" }));
+    setTimeout(() => window.scrollTo({ top: y, left: 0, behavior: "auto" }), 80);
+  }, []);
 
   // ── Check LC auth on mount ────────────────────────────
   useEffect(() => {
@@ -367,7 +563,7 @@ export default function ShiftBoard() {
     const base = shifts.find(s => s.id === shiftId);
     if (!base) return [];
     const { data } = await sb.from("shifts").select(`
-      id, poster_name, poster_email, type, time, date,
+      id, poster_name, poster_email, poster_vector_full_name, type, time, date,
       is_swap, swap_partner_name, swap_partner_email, swap_partner_type, swap_partner_time, swap_partner_date,
       has_preferred, preferred_name, preferred_email
     `).eq("status","open").eq("date",base.date).eq("type",base.type).eq("time",base.time).neq("id",shiftId);
@@ -375,16 +571,49 @@ export default function ShiftBoard() {
   }, [sb, shifts]);
 
   // ── Post shift ────────────────────────────────────────
-  const openPostModal = () => { setPf(emptyPostForm); setPfEmailOk(false); setPfErr(""); setPostWarnings([]); setPostVectorResult(null); setShowPostModal(true); };
+  const openPostModal = () => {
+    const id = loadIdentity();
+    setPf({ ...emptyPostForm, name: id.name, email: id.email });
+    setPfEmailOk(false);
+    setPfErr("");
+    setPostWarnings([]);
+    setPostVectorResult(null);
+    setSingleSwapMismatchOk(false);
+    setSingleSwapMismatchOk(false);
+    setPostStep("identity");
+    setSingleVectorShifts([]);
+    setSingleSelectedKey("");
+    setSingleVectorErr("");
+    setSingleVectorLoading(false);
+    setMultiMode(false);
+    setMultiErr("");
+    setMultiShifts([]);
+    setMultiSelected({});
+    setMultiStage("pick");
+    setMultiConfigIndex(0);
+    setMultiDryRunResults([]);
+    setMultiStartDate(chicagoTodayStr());
+    const d = new Date(chicagoTodayStr() + "T12:00:00");
+    d.setDate(d.getDate() + 30);
+    setMultiEndDate(d.toISOString().slice(0, 10));
+    setShowPostModal(true);
+  };
+
+  const openNotifyModal = () => { const id = loadIdentity(); setNf({ ...emptyNotifyForm, name: id.name, email: id.email }); setNfEmailOk(false); setNfErr(""); setShowNotifyModal(true); };
+  const openBulkPostModal = () => { const id = loadIdentity(); setBulkName(id.name); setBulkEmail(id.email); setBulkEmailOk(false); setBulkRows([newBulkRow()]); setBulkResults({}); setBulkStage("edit"); setBulkErr(""); setShowBulkPostModal(true); };
 
   const validatePost = async () => {
     const e = pf.email.trim().toLowerCase();
     setPostWarnings([]);
     setPostVectorResult(null);
+    setSingleSwapMismatchOk(false);
     if (!pf.name.trim()||!e||!pf.date) { setPfErr("Fill in all fields."); return false; }
     if (!pfEmailOk) { setPfErr("Confirm that you used the correct email address."); return false; }
+    if (daysFromTodayChicago(pf.date) < 0) { setPfErr("You cannot post a shift before today's date."); return false; }
+    if (!pf.lcOverride && !pf.selectedVectorShiftId) { setPfErr("Load your Vector shifts for that date and select the exact shift you want to post."); return false; }
     if (pf.isSwap && pf.hasPreferred) { setPfErr("Choose either a swap request or a preferred applicant, not both."); return false; }
     if (pf.isSwap && (!pf.swapName.trim()||!pf.swapEmail.trim()||!pf.swapDate)) { setPfErr("Fill in all swap partner details."); return false; }
+    if (pf.isSwap && daysFromTodayChicago(pf.swapDate) < 0) { setPfErr("The swap partner's shift date cannot be before today's date."); return false; }
     if (pf.hasPreferred && (!pf.prefName.trim()||!pf.prefEmail.trim()||!pf.prefReason.trim())) { setPfErr("Fill in the preferred applicant name, email, and reason."); return false; }
     if (pf.lcOverride && !lcAuth) { setPfErr("Only LCs can post without Vector confirmation."); return false; }
     if (pf.lcOverride && (!pf.lcShiftLength || Number(pf.lcShiftLength) <= 0)) { setPfErr("Enter the shift length for this LC-created open shift."); return false; }
@@ -408,7 +637,12 @@ export default function ShiftBoard() {
         return false;
       }
       setPostVectorResult(data);
-      setPostWarnings([...(warnings || []), ...(data.warnings || [])]);
+      const softWarnings = [...(warnings || []), ...(data.warnings || [])];
+      const posterMismatch = earlyLateMismatchWarning(pf.time, data.selectedPosterShift);
+      if (posterMismatch) softWarnings.push(posterMismatch);
+      const swapMismatch = pf.isSwap ? earlyLateMismatchWarning(pf.swapTime, data.selectedSwapShift) : null;
+      if (swapMismatch) softWarnings.push(`Swap partner: ${swapMismatch}`);
+      setPostWarnings(softWarnings);
       setPfErr("");
       return true;
     } finally {
@@ -428,6 +662,7 @@ export default function ShiftBoard() {
         return;
       }
       setPostConfirmOpen(false); setShowPostModal(false); setPage(1);
+      saveIdentity(pf.name, pf.email);
       await refetchRef.current?.();
       showToast("Shift posted");
     } finally {
@@ -435,13 +670,336 @@ export default function ShiftBoard() {
     }
   };
 
+
+  const verifyPosterIdentity = async () => {
+    const e = normEmail(pf.email);
+    if (!pf.name.trim() || !e) { setPfErr("Enter your name and email first."); return; }
+    if (!pfEmailOk) { setPfErr("Confirm that this is your correct email."); return; }
+    setActionLoading(true); setPfErr("");
+    try {
+      const today = chicagoTodayStr();
+      const res = await fetch("/api/vector/person-shifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: pf.name.trim(), email: e, startDate: today, endDate: today }),
+      });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        setPfErr(data.error || "Vector could not confirm this email.");
+        return;
+      }
+      saveIdentity(pf.name, e);
+      setPf(p => ({ ...p, email: e, name: data.vectorUser?.full_name || p.name }));
+      setPostStep("mode");
+    } finally { setActionLoading(false); }
+  };
+
+  const loadSingleVectorShifts = async () => {
+    const e = normEmail(pf.email);
+    if (!pf.name.trim() || !e) { setSingleVectorErr("Enter your name and email first."); return; }
+    if (!pf.date) { setSingleVectorErr("Choose the date of the shift first."); return; }
+    if (daysFromTodayChicago(pf.date) < 0) { setSingleVectorErr("You cannot post a shift before today's date."); return; }
+    setSingleVectorLoading(true); setSingleVectorErr(""); setSingleVectorShifts([]); setSingleSelectedKey(""); setPostVectorResult(null);
+    try {
+      const res = await fetch("/api/vector/person-shifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: pf.name.trim(), email: e, startDate: pf.date, endDate: pf.date }),
+      });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        setSingleVectorErr(data.error || "Could not load your Vector shifts for that date.");
+        return;
+      }
+      const rows = arr(data.shifts);
+      setSingleVectorShifts(rows);
+      if (rows.length === 0) {
+        setSingleVectorErr("Vector does not show you working on that date. You cannot post a shift you are not scheduled for.");
+        setPf(p => ({ ...p, selectedVectorShiftId:"" }));
+      } else if (rows.length === 1) {
+        const s = rows[0];
+        setSingleSelectedKey(bulkShiftKey(s, 0));
+        setPf(p => ({ ...p, selectedVectorShiftId: String(s.shift_id || ""), type: inferTypeFromVectorShift(s), time: inferTimeFromVectorShift(s), date: vectorShiftDate(s) || p.date }));
+      }
+    } finally { setSingleVectorLoading(false); }
+  };
+
+  // ── Multi-post from Vector schedule ───────────────────
+  const updateMultiRow = (key, patch) => {
+    setMultiSelected(prev => ({ ...prev, [key]: { ...(prev[key] || {}), ...patch } }));
+    setMultiDryRunResults([]);
+  };
+  const selectedMultiRows = () => multiShifts
+    .map((s, idx) => ({ shift: s, key: bulkShiftKey(s, idx), cfg: multiSelected[bulkShiftKey(s, idx)] || {} }))
+    .filter(row => row.cfg?.selected)
+    .sort((a,b) => `${vectorShiftDate(a.shift)} ${a.shift?.shift_start || ''} ${a.key}`.localeCompare(`${vectorShiftDate(b.shift)} ${b.shift?.shift_start || ''} ${b.key}`));
+
+  const multiRowBody = ({ shift, cfg }) => {
+    const date = vectorShiftDate(shift);
+    const type = inferTypeFromVectorShift(shift);
+    const time = inferTimeFromVectorShift(shift);
+    return {
+      name: pf.name.trim(),
+      email: normEmail(pf.email),
+      type,
+      time,
+      date,
+      note: cfg.note || "",
+      selectedVectorShiftId: shift.shift_id,
+      dryRun: false,
+      hasPreferred: cfg.mode === "preferred",
+      prefName: cfg.prefName || "",
+      prefEmail: normEmail(cfg.prefEmail || ""),
+      prefReason: cfg.prefReason || "",
+      isSwap: cfg.mode === "swap",
+      swapName: cfg.swapName || "",
+      swapEmail: normEmail(cfg.swapEmail || ""),
+      swapType: cfg.swapType || "guard",
+      swapTime: cfg.swapTime || "early",
+      swapDate: cfg.swapDate || "",
+    };
+  };
+
+  const validateMultiConfigRow = ({ shift, cfg }) => {
+    const date = vectorShiftDate(shift);
+    const ownTime = inferTimeFromVectorShift(shift);
+    const label = `${fmtDate(date)} · ${ownTime === "late" ? "Late" : "Early"} ${inferTypeFromVectorShift(shift) === "manager" ? "Manager" : "Guard"}`;
+    if (cfg.mode === "preferred" && (!cfg.prefName?.trim() || !normEmail(cfg.prefEmail) || !cfg.prefReason?.trim())) return `${label}: fill in the preferred applicant name, email, and reason.`;
+    if (cfg.mode === "swap" && (!cfg.swapName?.trim() || !normEmail(cfg.swapEmail) || !cfg.swapDate)) return `${label}: fill in the swap partner name, email, and shift date.`;
+    if (cfg.mode === "swap" && daysFromTodayChicago(cfg.swapDate) < 0) return `${label}: the swap partner's shift date cannot be before today's date.`;
+    return null;
+  };
+
+  const dryRunOneMultiRow = async (row) => {
+    const body = { ...multiRowBody(row), dryRun: true };
+    const res = await fetch("/api/post-shift", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+    return { row, ok: !!(res.ok && data.success), data, error: data.error || "Could not validate this shift." };
+  };
+
+  const loadMultiVectorShifts = async () => {
+    const e = normEmail(pf.email);
+    if (!pf.name.trim() || !e) { setMultiErr("Enter your name and email first."); return; }
+    if (!pfEmailOk) { setMultiErr("Confirm your email first."); return; }
+    if (!multiStartDate || !multiEndDate || multiEndDate < multiStartDate) { setMultiErr("Choose a valid date range."); return; }
+    if (daysFromTodayChicago(multiStartDate) < 0 || daysFromTodayChicago(multiEndDate) < 0) { setMultiErr("You cannot load or post shifts before today's date."); return; }
+    setMultiLoading(true); setMultiErr(""); setMultiStage("pick"); setMultiConfigIndex(0); setMultiDryRunResults([]);
+    try {
+      const res = await fetch("/api/vector/person-shifts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: pf.name.trim(), email: e, startDate: multiStartDate, endDate: multiEndDate }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setMultiErr(data.error || "Could not load your Vector shifts.");
+        setMultiShifts([]);
+        return;
+      }
+      const rows = arr(data.shifts)
+        .filter(s => daysFromTodayChicago(vectorShiftDate(s)) >= 0)
+        .sort((a,b) => `${vectorShiftDate(a)} ${a.shift_start || ''} ${a.assignment_id || ''} ${a.shift_id || ''}`.localeCompare(`${vectorShiftDate(b)} ${b.shift_start || ''} ${b.assignment_id || ''} ${b.shift_id || ''}`))
+        .map((s, idx) => ({ ...s, __bulk_key: s.__bulk_key || bulkShiftKey(s, idx) }));
+      setMultiShifts(rows);
+      const next = {};
+      rows.forEach((s, idx) => {
+        const key = bulkShiftKey(s, idx);
+        next[key] = multiSelected[key] || { selected: false, mode: "normal", note: "", prefName: "", prefEmail: "", prefReason: "", swapName: "", swapEmail: "", swapType: inferTypeFromVectorShift(s), swapTime: inferTimeFromVectorShift(s), swapDate: vectorShiftDate(s) };
+      });
+      setMultiSelected(next);
+      if (rows.length === 0) setMultiErr("Vector did not show any future shifts for you in that date range.");
+    } catch (err) {
+      setMultiErr(err.message || "Could not load your Vector shifts.");
+    } finally { setMultiLoading(false); }
+  };
+
+  const startMultiConfigure = () => {
+    const selected = selectedMultiRows();
+    if (selected.length === 0) { setMultiErr("Select at least one Vector shift to post."); return; }
+    setMultiErr("");
+    setMultiConfigIndex(0);
+    setMultiDryRunResults([]);
+    setMultiStage("configure");
+  };
+
+  const nextMultiConfig = async () => {
+    const selected = selectedMultiRows();
+    const row = selected[multiConfigIndex];
+    if (!row) { setMultiStage("pick"); return; }
+    const err = validateMultiConfigRow(row);
+    if (err) { setMultiErr(err); return; }
+
+    setMultiLoading(true);
+    setMultiErr("");
+    try {
+      const result = await dryRunOneMultiRow(row);
+      setMultiDryRunResults(prev => {
+        const withoutThis = prev.filter(r => r.row?.key !== row.key);
+        return [...withoutThis, result];
+      });
+      if (!result.ok) {
+        setMultiErr(`${fmtDate(vectorShiftDate(row.shift))}: ${result.error}`);
+        return;
+      }
+      if ((row.cfg?.mode || "normal") === "swap") {
+        const mismatch = swapTimeMismatchNotice(row.cfg?.swapTime || "early", result.data?.selectedSwapShift);
+        if (mismatch && !row.cfg?.swapMismatchConfirmed) {
+          updateMultiRow(row.key, {
+            swapMismatchWarning: `Vector says this swap partner's exact shift looks like ${mismatch.actualLabel}, but you marked it as ${mismatch.selected}. Exact Vector shift: ${mismatch.vectorLabel}.`,
+            swapMismatchConfirmed: false,
+          });
+          setMultiErr("Confirm the swap partner's exact Vector shift before moving to the next selected shift.");
+          return;
+        }
+      }
+      if (multiConfigIndex < selected.length - 1) setMultiConfigIndex(i => i + 1);
+      else setMultiStage("review");
+    } finally {
+      setMultiLoading(false);
+    }
+  };
+
+  const dryRunMultiPosts = async (selected) => {
+    const results = [];
+    for (const row of selected) {
+      const body = { ...multiRowBody(row), dryRun: true };
+      const res = await fetch("/api/post-shift", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      results.push({ row, ok: !!(res.ok && data.success), data, error: data.error || "Could not validate this shift." });
+    }
+    return results;
+  };
+
+  const confirmMultiPostFromVector = async () => {
+    const selected = selectedMultiRows();
+    if (selected.length === 0) { setMultiErr("Select at least one Vector shift to post."); return; }
+    for (const row of selected) {
+      const err = validateMultiConfigRow(row);
+      if (err) { setMultiErr(err); setMultiStage("configure"); setMultiConfigIndex(Math.max(0, selected.findIndex(r => r.key === row.key))); return; }
+    }
+    setMultiLoading(true); setMultiErr("");
+    try {
+      const checks = await dryRunMultiPosts(selected);
+      setMultiDryRunResults(checks);
+      const failedChecks = checks.filter(r => !r.ok);
+      if (failedChecks.length > 0) {
+        const first = failedChecks[0];
+        setMultiErr(`${failedChecks.length} selected shift${failedChecks.length === 1 ? "" : "s"} need attention before posting. ${fmtDate(vectorShiftDate(first.row.shift))}: ${first.error}`);
+        setMultiStage("review");
+        return;
+      }
+      const ok = typeof window === "undefined" ? true : window.confirm(`Post ${selected.length} selected shift${selected.length === 1 ? "" : "s"}?`);
+      if (!ok) return;
+      let posted = 0;
+      const failed = [];
+      for (const row of selected) {
+        const body = multiRowBody(row);
+        const res = await fetch("/api/post-shift", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+        if (res.ok && data.success) posted += 1; else failed.push(`${fmtDate(vectorShiftDate(row.shift))} ${vectorShiftLabel(row.shift)}: ${data.error || "failed"}`);
+      }
+      saveIdentity(pf.name, pf.email);
+      await fetchData();
+      if (failed.length) {
+        setMultiErr(`Posted ${posted}, but ${failed.length} failed. ${failed.slice(0, 2).join(" ")}${failed.length > 2 ? " …" : ""}`);
+      } else {
+        showToast(`Posted ${posted} shift${posted === 1 ? "" : "s"}`);
+        setShowPostModal(false);
+      }
+    } finally { setMultiLoading(false); }
+  };
+
+  // ── Notify me + bulk posting ─────────────────────────
+  const submitNotify = async () => {
+    const e = normEmail(nf.email);
+    if (!nf.name.trim() || !e || !nf.startDate || !nf.endDate) { setNfErr("Fill in name, email, and date range."); return; }
+    if (!nfEmailOk) { setNfErr("Confirm that this is your correct email."); return; }
+    if (nf.endDate < nf.startDate) { setNfErr("End date must be on or after start date."); return; }
+    setNotifyLoading(true); setNfErr("");
+    try {
+      const res = await fetch("/api/watch-shifts", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ ...nf, email: e }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { setNfErr(data.error || "Could not save notification."); return; }
+      saveIdentity(nf.name, e);
+      setShowNotifyModal(false);
+      if (data.duplicate) {
+        showToast("That notification already exists. No duplicate was added.");
+      } else if (data.overlapping) {
+        showToast("Notification saved. Overlapping alerts will only send one email per posted shift.");
+      } else {
+        showToast("Notification saved. You'll get an email when a matching shift is posted.");
+      }
+    } finally { setNotifyLoading(false); }
+  };
+
+  const updateBulkRow = (tempId, patch) => {
+    setBulkRows(rows => rows.map(r => r.tempId === tempId ? { ...r, ...patch } : r));
+    setBulkStage("edit");
+  };
+  const addBulkRow = () => setBulkRows(rows => [...rows, newBulkRow()]);
+  const removeBulkRow = (tempId) => setBulkRows(rows => rows.length <= 1 ? rows : rows.filter(r => r.tempId !== tempId));
+
+  const validateBulkPosts = async () => {
+    const e = normEmail(bulkEmail);
+    if (!bulkName.trim() || !e) { setBulkErr("Enter your name and email."); return; }
+    if (!bulkEmailOk) { setBulkErr("Confirm that this is your correct email."); return; }
+    const usable = bulkRows.filter(r => r.date);
+    if (usable.length === 0) { setBulkErr("Add at least one dated shift."); return; }
+    setBulkLoading(true); setBulkErr("");
+    const nextResults = {};
+    try {
+      for (const row of bulkRows) {
+        if (!row.date) {
+          nextResults[row.tempId] = { status: "empty", error: "Add a date or remove this row." };
+          continue;
+        }
+        const res = await fetch("/api/post-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ name: bulkName.trim(), email: e, type: row.type, time: row.time, date: row.date, note: row.note || "", selectedVectorShiftId: row.selectedVectorShiftId || "", dryRun: true }) });
+        const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+        if (data.needsShiftSelection) {
+          nextResults[row.tempId] = { status: "needs_selection", ...data };
+        } else if (!res.ok || !data.success) {
+          nextResults[row.tempId] = { status: "error", error: data.error || "Could not validate this row.", data };
+        } else {
+          const warnings = [...postDateWarnings(row.date), ...(data.warnings || [])];
+          const mismatch = earlyLateMismatchWarning(row.time, data.selectedPosterShift);
+          if (mismatch) warnings.push(mismatch);
+          nextResults[row.tempId] = { status: "valid", data, warnings };
+        }
+      }
+      setBulkResults(nextResults);
+      setBulkStage("review");
+    } finally { setBulkLoading(false); }
+  };
+
+  const confirmBulkPosts = async () => {
+    const e = normEmail(bulkEmail);
+    const validRows = bulkRows.filter(r => bulkResults[r.tempId]?.status === "valid");
+    if (validRows.length === 0) { setBulkErr("No validated rows are ready to post."); return; }
+    setBulkLoading(true); setBulkErr("");
+    let posted = 0;
+    const failed = [];
+    try {
+      for (const row of validRows) {
+        const res = await fetch("/api/post-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ name: bulkName.trim(), email: e, type: row.type, time: row.time, date: row.date, note: row.note || "", selectedVectorShiftId: row.selectedVectorShiftId || "", dryRun: false }) });
+        const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+        if (res.ok && data.success) posted += 1;
+        else failed.push(`${fmtDate(row.date)} ${row.type} ${row.time}: ${data.error || "failed"}`);
+      }
+      saveIdentity(bulkName, e);
+      await refetchRef.current?.();
+      setShowBulkPostModal(false);
+      showToast(failed.length ? `Posted ${posted}; ${failed.length} failed.` : `Posted ${posted} shift${posted === 1 ? "" : "s"}`);
+    } finally { setBulkLoading(false); }
+  };
+
   // ── Apply ─────────────────────────────────────────────
   const [identicalShifts, setIdenticalShifts] = useState([]);
 
   const openApplyModal = async (id) => {
-    setAName(""); setAEmail(""); setAEmailOk(false); setAHours(""); setANote(""); setAConfirmed(false); setAIdentical(false); setAIdenticalIds([]); setASpecialIds([]); setAErr(""); setApplyActionPrompt(null); setShowApplyModal(id);
-    const ident = await getIdenticalOpen(id);
-    setIdenticalShifts(ident);
+    const ident = loadIdentity();
+    setAName(ident.name); setAEmail(ident.email); setAEmailOk(false); setAHours(""); setANote(""); setAConfirmed(false); setAIdentical(false); setAIdenticalIds([]); setASpecialIds([]); setAErr(""); setApplyActionPrompt(null); setShowApplyModal(id);
+    const identMatches = await getIdenticalOpen(id);
+    setIdenticalShifts(identMatches);
   };
 
   const confirmApply = async () => {
@@ -457,6 +1015,7 @@ export default function ShiftBoard() {
         return;
       }
       setPendingApply(null); setShowApplyModal(null); setPage(1);
+      saveIdentity(pendingApply.name, pendingApply.email);
       await refetchRef.current?.();
       showToast(pendingApply.shiftIds.length === 1 ? "Application submitted" : `Applications submitted to ${pendingApply.shiftIds.length} shifts`);
     } finally {
@@ -522,6 +1081,7 @@ export default function ShiftBoard() {
   };
 
   const checkCurrentVectorHours = async (shiftId, appId) => {
+    const scrollY = typeof window !== "undefined" ? window.scrollY : null;
     setCurrentVectorHoursLoading(prev => ({ ...prev, [appId]: true }));
     try {
       const res = await fetch("/api/vector/current-application-hours", {
@@ -561,6 +1121,7 @@ export default function ShiftBoard() {
       return data;
     } finally {
       setCurrentVectorHoursLoading(prev => ({ ...prev, [appId]: false }));
+      restoreScrollSoon(scrollY);
     }
   };
 
@@ -654,6 +1215,109 @@ export default function ShiftBoard() {
     }
   };
 
+  // ── My activity (lookup by email) ─────────────────────
+  const openMineModal = () => {
+    setMineEmail(loadIdentity().email || "");
+    setMine(null);
+    setShowMineModal(true);
+  };
+
+  const lookupMine = useCallback(async (emailOverride) => {
+    const e = normEmail(emailOverride ?? mineEmail);
+    if (!e) return;
+    setMineLoading(true);
+    try {
+      // Be forgiving here: older rows may have emails with different capitalization or stray spaces.
+      // Pull a bounded recent set and match normalized emails client-side so My Activity does not look empty for real users.
+      const [postsRes, appsRes, watchesRes] = await Promise.all([
+        sb.from("shifts")
+          .select("*")
+          .order("date", { ascending: false })
+          .limit(500),
+        sb.from("applications")
+          .select("*, shifts(*)")
+          .order("applied_at", { ascending: false })
+          .limit(500),
+        sb.from("shift_watch_requests")
+          .select("*")
+          .eq("status", "active")
+          .order("created_at", { ascending: false })
+          .limit(500),
+      ]);
+
+      if (postsRes.error) throw postsRes.error;
+      if (appsRes.error) throw appsRes.error;
+      if (watchesRes.error) throw watchesRes.error;
+
+      const posts = (postsRes.data || [])
+        .filter(s => emailMatches(s.poster_email, e))
+        .slice(0, 30);
+      const apps = (appsRes.data || [])
+        .filter(a => emailMatches(a.applicant_email, e))
+        .slice(0, 30);
+      const watches = (watchesRes.data || [])
+        .filter(w => emailMatches(w.email, e))
+        .slice(0, 30);
+
+      setMine({ email: e, posts, apps, watches });
+      saveIdentity(loadIdentity().name, e);
+    } catch (err) {
+      console.error("My activity lookup error", err);
+      showToast("Could not load My activity. Try again or ask an LC.");
+      setMine({ email: e, posts: [], apps: [], watches: [] });
+    } finally {
+      setMineLoading(false);
+    }
+  }, [sb, mineEmail]);
+
+  const mineDeletePost = async (shiftId) => {
+    if (!mine?.email) return;
+    const ok = typeof window === "undefined" ? true : window.confirm("Are you sure you want to delete this posted shift? This only deletes the Shift Swap posting, not Vector.");
+    if (!ok) return;
+    setMineBusyId(`shift-${shiftId}`);
+    try {
+      const res = await fetch("/api/delete-own-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId, email: mine.email }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not delete this shift."); return; }
+      showToast("Your shift posting was deleted");
+      await Promise.all([lookupMine(mine.email), refetchRef.current?.()]);
+    } finally {
+      setMineBusyId(null);
+    }
+  };
+
+  const mineWithdrawApp = async (applicationId) => {
+    if (!mine?.email) return;
+    const ok = typeof window === "undefined" ? true : window.confirm("Are you sure you want to withdraw this application? You can apply again later if the shift is still open.");
+    if (!ok) return;
+    setMineBusyId(`app-${applicationId}`);
+    try {
+      const res = await fetch("/api/delete-application", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ applicationId, email: mine.email }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not withdraw this application."); return; }
+      showToast("Application withdrawn");
+      await Promise.all([lookupMine(mine.email), refetchRef.current?.()]);
+    } finally {
+      setMineBusyId(null);
+    }
+  };
+
+  const mineUnsubscribeWatch = async (watchId) => {
+    if (!mine?.email) return;
+    const ok = typeof window === "undefined" ? true : window.confirm("Turn off this Notify Me alert? You will stop getting emails for this saved notification.");
+    if (!ok) return;
+    setMineBusyId(`watch-${watchId}`);
+    try {
+      const res = await fetch("/api/watch-shifts", { method: "DELETE", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ watchId, email: mine.email }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not unsubscribe from this notification."); return; }
+      showToast("Notification turned off");
+      await lookupMine(mine.email);
+    } finally {
+      setMineBusyId(null);
+    }
+  };
+
   // ── LC login ──────────────────────────────────────────
   const doLcLogin = async () => {
     const res = await fetch("/api/auth/lc", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ password: pwInput }) });
@@ -696,21 +1360,22 @@ export default function ShiftBoard() {
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 13, color: "#5e6675" }}>posted by</div>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>{shift.poster_name}</div>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{canonicalPosterName(shift)}</div>
             <div style={{ fontSize: 11, color: "#8a92a0" }}>{timeAgo(shift.posted_at)}</div>
           </div>
         </div>
 
-        {/* Public swap display */}
-        {shift.is_swap && !lcReview && !closed && <InfoBlock badge="swap requested">Swap is requested, not guaranteed. Others are still welcome to apply.</InfoBlock>}
         {/* LC swap display */}
-        {shift.is_swap && (lcReview || lcMode) && <InfoBlock badge="swap">{shift.poster_name} gives up {shift.type} {shift.time} on {fmtDate(shift.date)}.<br/>{shift.swap_partner_name} gives up {shift.swap_partner_type} {shift.swap_partner_time} on {fmtDate(shift.swap_partner_date)}.</InfoBlock>}
+        {shift.is_swap && (lcReview || lcMode) && <InfoBlock badge="swap">
+          <b>{canonicalPosterName(shift)}</b> gives up <b>{shortVectorShiftLabel(shift, "poster")}</b> on {fmtDate(shift.date)}.<br/>
+          <b>{canonicalSwapName(shift)}</b> gives up <b>{shortVectorShiftLabel(shift, "swap_partner")}</b> on {fmtDate(shift.swap_partner_date)}.
+        </InfoBlock>}
         {/* LC preferred display */}
-        {(lcReview || lcMode) && shift.has_preferred && <InfoBlock badge="preferred applicant" gold><b>{shift.preferred_name}</b> was listed as preferred. Reason: {shift.preferred_reason}</InfoBlock>}
+        {(lcReview || lcMode) && shift.has_preferred && <InfoBlock badge="preferred applicant" gold><b>{canonicalPreferredName(shift)}</b> was listed as preferred. Reason: {shift.preferred_reason}</InfoBlock>}
         {/* LC note */}
         {(lcReview || lcMode) && shift.private_lc_note && <InfoBlock badge="private LC note">{shift.private_lc_note}</InfoBlock>}
         {(lcReview || lcMode) && shift.vector_source === "lc_override" && <InfoBlock badge="LC open shift" gold>No poster Vector shift attached. Length: {shift.lc_override_shift_length || shift.poster_vector_shift_length} hrs.</InfoBlock>}
-        {(lcReview || lcMode) && shift.vector_source !== "lc_override" && shift.poster_vector_shift_id && <InfoBlock badge="Vector shift">{shift.poster_vector_assignment_name || "Vector assignment"} · {shift.poster_vector_shift_length} hrs · ID {shift.poster_vector_shift_id}</InfoBlock>}
+        {(lcReview || lcMode) && shift.vector_source !== "lc_override" && shift.poster_vector_shift_id && <InfoBlock badge="Vector shift">{storedVectorShiftLabel(shift, "poster")}</InfoBlock>}
         {(lcReview || lcMode) && arr(shift.vector_warnings).length > 0 && <WarningBox>{arr(shift.vector_warnings).join("; ")}</WarningBox>}
         {(lcReview || lcMode) && arr(shift.preferred_vector_warnings).length > 0 && <WarningBox>{arr(shift.preferred_vector_warnings).join("; ")}</WarningBox>}
 
@@ -725,7 +1390,7 @@ export default function ShiftBoard() {
           </div>
         )}
 
-        {isTaken && <div style={{ fontSize: 13, color: "#5e6675", marginTop: 8 }}>Picked up by <b style={{ color: "#172033" }}>{shift.taken_by_name}</b></div>}
+        {isTaken && <div style={{ fontSize: 13, color: "#5e6675", marginTop: 8 }}>Picked up by <b style={{ color: "#172033" }}>{shift.approved_vector_full_name || shift.taken_by_name}</b></div>}
         {isExpired && <div style={{ fontSize: 13, color: "#5e6675", marginTop: 8 }}><b style={{ color: "#172033" }}>Expired</b>, no sub was picked up.</div>}
 
         {/* LC delete button */}
@@ -757,26 +1422,40 @@ export default function ShiftBoard() {
               const effectiveCheckedAt = hasLiveCurrent ? liveCheckedAt : savedCurrentCheckedAt;
               const effectiveOt = hasLiveCurrent ? liveOt : savedCurrentOt;
               const isOt = hasLiveCurrent || hasSavedCurrent ? effectiveOt : (!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40);
-              const displayProjected = effectiveProjectedHours != null ? effectiveProjectedHours : appProjectedHours;
               return (
-                <div key={app.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, border: isSP?"1.5px solid #85B7EB":isPref?"1.5px solid #D9B451":"0.5px solid transparent" }}>
+                <div key={app.id} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "10px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 8, fontSize: 13, border: isSP?"1.5px solid #85B7EB":isPref?"1.5px solid #D9B451":"0.5px solid transparent" }}>
                   <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-                    <b>{app.applicant_name}</b>
+                    <b>{canonicalAppName(app)}</b>
                     <span style={{ fontSize: 11, color: "#8a92a0" }}>{st.approvedWeek} approved this week, {st.approvedAll} all time, {Math.max(0, st.pendingWeek - 1)} other app{Math.max(0, st.pendingWeek - 1) === 1 ? "" : "s"} still pending this week</span>
                     {isSP && <span style={B("#E6F1FB","#0C447C")}>swap partner</span>}
                     {isPref && <span style={B("#FFF2B8","#8A5A00")}>preferred</span>}
-                    <span style={B(isOt?"#FCEBEB":"#EAF3DE", isOt?"#791F1F":"#27500A")}>Hours projected {displayProjected ?? "?"} hrs{effectiveCurrentHours != null ? ` · current ${effectiveCurrentHours} hrs` : ""}{isOt?" · OT":""}</span>
-                    {appCurrentHours != null && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>At application: hours current {appCurrentHours} · hours projected {appProjectedHours}. Matched as {app.applicant_vector_full_name || app.applicant_name}.</span>}
-                    {(hasLiveCurrent || hasSavedCurrent) && <span style={{ width: "100%", fontSize: 11, color: effectiveOt ? "#8A1F1F" : "#27500A", marginTop: 4 }}>Last checked: hours current {effectiveCurrentHours} · hours projected {effectiveProjectedHours}{effectiveOt ? " · OT" : ""}{effectiveCheckedAt ? ` · checked ${timeAgo(effectiveCheckedAt)}` : ""}.</span>}
+                    {isOt && <OTChip />}
+                    <HoursTable>
+                      <HoursRow
+                        label="At application"
+                        current={appCurrentHours != null ? `${appCurrentHours} hrs` : "—"}
+                        projected={appProjectedHours != null ? `${appProjectedHours} hrs` : "—"}
+                        ot={!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40}
+                      />
+                      {(hasLiveCurrent || hasSavedCurrent)
+                        ? <HoursRow
+                            label={effectiveCheckedAt ? `Checked ${timeAgo(effectiveCheckedAt)}` : "Last checked"}
+                            current={effectiveCurrentHours != null ? `${effectiveCurrentHours} hrs` : "—"}
+                            projected={effectiveProjectedHours != null ? `${effectiveProjectedHours} hrs` : "—"}
+                            ot={effectiveOt}
+                          />
+                        : <HoursRow label="Last checked" note="Not checked yet — use the button below for live Vector hours." />}
+                    </HoursTable>
+                    {app.applicant_vector_full_name && <span style={{ width: "100%", fontSize: 11, color: "#8a92a0", marginTop: 2 }}>Matched in Vector as {app.applicant_vector_full_name}.</span>}
                     {liveHours?.updatedFromWeekCheck && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Updated because another application for this person was checked in the same work week.</span>}
                     {liveHours && !liveHours.success && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Current Vector hours check failed: {liveHours.error || "Unknown error"}</span>}
                     {arr(app.applicant_vector_warnings).length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Vector warning: {arr(app.applicant_vector_warnings).join("; ")}</span>}
                     {app.applicant_note && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Applicant note: {app.applicant_note}</span>}
                     {st.priorApprovals.length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A5A00", marginTop: 4 }}>Already approved for {st.priorApprovals.length} shift{st.priorApprovals.length===1?"":"s"} this week: {st.priorApprovals.map(p => `${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs reported)`).join("; ")}.</span>}
                   </div>
-                  <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     <button disabled={!!currentVectorHoursLoading[app.id]} onClick={() => checkCurrentVectorHours(shift.id, app.id)} style={{ ...btn2, padding: "6px 12px", fontSize: 12, border: "0.5px solid #9BB7D4", background: "#F6FAFF", color: "#0C447C", opacity: currentVectorHoursLoading[app.id] ? 0.55 : 1 }}>{currentVectorHoursLoading[app.id] ? "Checking..." : "Check current hours"}</button>
-                    <button disabled={deletingApplicationId === app.id} onClick={() => setDeleteApplicationPrompt({ applicationId: app.id, applicantName: app.applicant_name, applicantEmail: app.applicant_email, shift })} style={{ ...btn2, padding: "6px 12px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: deletingApplicationId === app.id ? 0.55 : 1 }}>{deletingApplicationId === app.id ? "Deleting..." : "Delete app"}</button>
+                    <button disabled={deletingApplicationId === app.id} onClick={() => setDeleteApplicationPrompt({ applicationId: app.id, applicantName: canonicalAppName(app), applicantEmail: app.applicant_email, shift })} style={{ ...btn2, padding: "6px 12px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: deletingApplicationId === app.id ? 0.55 : 1 }}>{deletingApplicationId === app.id ? "Deleting..." : "Delete app"}</button>
                     <button onClick={() => openApprovalModal(shift.id, app.id)} style={{ ...btnP, background: "#1D9E75", padding: "6px 14px", fontSize: 12 }}>Approve</button>
                   </div>
                 </div>
@@ -789,7 +1468,7 @@ export default function ShiftBoard() {
         {lcReview && isTaken && allA.length > 0 && (
           <div style={{ marginTop: 12, borderTop: "0.5px solid #e0e3e8", paddingTop: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.5px" }}>Resolution</div>
-            {allA.map(a => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, opacity: a.status==="declined"?0.5:1 }}><b>{a.applicant_name}</b><span style={{ fontSize: 12, fontWeight: 700, color: a.status==="approved"?"#1D9E75":"#A32D2D" }}>{a.status}</span></div>)}
+            {allA.map(a => <div key={a.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, opacity: a.status==="declined"?0.5:1 }}><b>{canonicalAppName(a)}</b><span style={{ fontSize: 12, fontWeight: 700, color: a.status==="approved"?"#1D9E75":"#A32D2D" }}>{a.status}</span></div>)}
           </div>
         )}
       </div>
@@ -806,15 +1485,15 @@ export default function ShiftBoard() {
           {done && <span style={B("#EAF3DE","#27500A")}>done</span>}
         </div>
         <div style={{ fontSize: 14, fontWeight: 700 }}>{fmtDate(shift.date)}</div>
-        <div style={{ fontSize: 13, color: "#5e6675" }}>{shift.poster_name} → {shift.taken_by_name}</div>
+        <div style={{ fontSize: 13, color: "#5e6675" }}>{canonicalPosterName(shift)} → {shift.approved_vector_full_name || shift.taken_by_name}</div>
         {shift.is_swap && shift.taken_by_email === shift.swap_partner_email && (
           <div style={{ fontSize: 12, color: "#5e6675", marginTop: 4, lineHeight: 1.6 }}>
-            <b>{shift.poster_name}</b> gives up {shift.type} {shift.time} ({fmtDate(shift.date)})<br/>
-            <b>{shift.taken_by_name}</b> gives up {shift.swap_partner_type} {shift.swap_partner_time} ({fmtDate(shift.swap_partner_date)})
+            <b>{canonicalPosterName(shift)}</b> gives up {shortVectorShiftLabel(shift, "poster")} ({fmtDate(shift.date)})<br/>
+            <b>{shift.approved_vector_full_name || shift.taken_by_name}</b> gives up {shortVectorShiftLabel(shift, "swap_partner")} ({fmtDate(shift.swap_partner_date)})
           </div>
         )}
         {shift.is_swap && shift.taken_by_email !== shift.swap_partner_email && (
-          <div style={{ fontSize: 12, color: "#5e6675", marginTop: 4 }}>Swap was requested with <b>{shift.swap_partner_name}</b>, but <b>{shift.taken_by_name}</b> picked up the shift. No reciprocal shift to update.</div>
+          <div style={{ fontSize: 12, color: "#5e6675", marginTop: 4 }}>Swap was requested with <b>{canonicalSwapName(shift)}</b>, but <b>{shift.approved_vector_full_name || shift.taken_by_name}</b> picked up the shift. No reciprocal shift to update.</div>
         )}
       </div>
       {!done && <button onClick={() => markDone(shift.id)} style={btn2}>Mark done</button>}
@@ -888,6 +1567,8 @@ export default function ShiftBoard() {
         <button style={tabS(view==="board")} onClick={() => setView("board")}>Shift board</button>
         {lcAuth && <button style={tabS(view==="manager")} onClick={() => setView("manager")}>LC view</button>}
         <div style={{ flex: 1 }} />
+        <button onClick={openMineModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>My activity</button>
+        <button onClick={openNotifyModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>Notify me</button>
         <button onClick={openPostModal} style={{ ...btnP, margin: "6px 0" }}>Post a shift</button>
       </nav>
 
@@ -905,8 +1586,9 @@ export default function ShiftBoard() {
           </div>
         )}
         {renderDateFilter()}
+        {boardTab === "open" && shifts.some(s => s.is_swap) && <p style={{ fontSize: 12, color: "#8a92a0", margin: "0 0 12px", lineHeight: 1.5 }}>Shifts tagged <b>swap</b> have a requested swap partner — but a swap is never guaranteed, and anyone can still apply.</p>}
         {renderPagination()}
-        {shifts.length === 0 ? <Empty>{boardTab==="open"?"No open shifts right now.":"No recently taken or expired shifts yet."}</Empty>
+        {shifts.length === 0 ? <Empty>{boardTab==="open" ? (dateFilter ? "No open shifts on this date. Clear the date filter to see everything." : "No open shifts right now — everything is covered. Need coverage? Hit \u201CPost a shift\u201D above.") : "Nothing here yet. Shifts that get picked up or expire will show up here."}</Empty>
           : shifts.map(s => <ShiftCard key={s.id} shift={s} lcMode={lcAuth} />)}
         {renderPagination()}
       </>}
@@ -930,12 +1612,26 @@ export default function ShiftBoard() {
           <button style={tabS(lcTab==="history")} onClick={() => setLcTab("history")}>History</button>
         </div>
 
-        {lcTab === "review" && <>
-          {renderDateFilter()}{renderPagination()}
-          {shifts.length === 0 ? <Empty>No applications to review right now.</Empty>
-            : shifts.map(s => <ShiftCard key={s.id} shift={s} lcReview />)}
-          {renderPagination()}
-        </>}
+        {lcTab === "review" && (() => {
+          const q = lcSearch.trim().toLowerCase();
+          const visible = !q ? shifts : shifts.filter(s => {
+            const hay = [canonicalPosterName(s), s.poster_email, canonicalSwapName(s), s.swap_partner_email, canonicalPreferredName(s), s.preferred_email, storedVectorShiftLabel(s, "poster"), storedVectorShiftLabel(s, "swap_partner"), fmtDate(s.date), s.type, s.time, ...pendingAppsFor(s.id).flatMap(a => [canonicalAppName(a), a.applicant_email])].filter(Boolean).join(" ").toLowerCase();
+            return hay.includes(q);
+          });
+          return <>
+            {renderDateFilter()}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Search visible LC review page</label>
+              <input style={F} value={lcSearch} onChange={e => setLcSearch(e.target.value)} placeholder="Search applicant, poster, swap partner, email, or Vector shift..." />
+              {lcSearch && <div style={{ fontSize: 11, color: "#8a92a0", marginTop: 4 }}>Searching the currently loaded page. Use date/page controls if needed.</div>}
+            </div>
+            {renderPagination()}
+            {shifts.length === 0 ? <Empty>No pending applications to review. New applications appear here automatically — no refresh needed.</Empty>
+              : visible.length === 0 ? <Empty>No visible LC review cards match that search.</Empty>
+              : visible.map(s => <ShiftCard key={s.id} shift={s} lcReview />)}
+            {renderPagination()}
+          </>;
+        })()}
 
         {lcTab === "todo" && <>
           <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px" }}>Update these in Vector manually, then mark as done.</p>
@@ -944,7 +1640,7 @@ export default function ShiftBoard() {
             <button style={pillS(todoTab==="done")} onClick={() => setTodoTab("done")}>Completed</button>
           </div>
           {renderDateFilter()}{renderPagination()}
-          {shifts.length === 0 ? <Empty>{todoTab==="pending"?"All caught up.":"Nothing completed yet."}</Empty>
+          {shifts.length === 0 ? <Empty>{todoTab==="pending"?"All caught up — nothing is waiting on a Vector update.":"Nothing completed yet. Items you mark done will show up here."}</Empty>
             : shifts.map(s => <TodoRow key={s.id} shift={s} done={todoTab==="done"} />)}
           {renderPagination()}
         </>}
@@ -962,24 +1658,238 @@ export default function ShiftBoard() {
         </>}
       </>}
 
+
+      {/* ── NOTIFY ME MODAL ───────────────────────────── */}
+      {showNotifyModal && <Modal onClose={() => setShowNotifyModal(false)} z={118}>
+        <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>Notify me when shifts open</h2>
+        <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>Get an email when a matching shift is posted. This does not apply for you automatically.</p>
+        <LabeledInput label="Your name" value={nf.name} onChange={v => setNf(f=>({...f,name:v}))} placeholder="Albert Einstein" />
+        <LabeledInput label="Your email" type="email" value={nf.email} onChange={v => { setNf(f=>({...f,email:v})); setNfEmailOk(false); }} placeholder="aeinstein@cityofevanston.org" />
+        <CheckBox checked={nfEmailOk} onChange={setNfEmailOk}>I confirm this is my correct email.</CheckBox>
+        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Role</label><select style={F} value={nf.type} onChange={e => setNf(f=>({...f,type:e.target.value}))}><option value="any">Any</option><option value="guard">Guard</option><option value="manager">Manager</option></select></div>
+          <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Time</label><select style={F} value={nf.time} onChange={e => setNf(f=>({...f,time:e.target.value}))}><option value="any">Any</option><option value="early">Early</option><option value="late">Late</option></select></div>
+        </div>
+        <div style={{ display: "flex", gap: 12 }}>
+          <LabeledInput label="Start date" type="date" value={nf.startDate} onChange={v => setNf(f=>({...f,startDate:v}))} />
+          <LabeledInput label="End date" type="date" value={nf.endDate} onChange={v => setNf(f=>({...f,endDate:v}))} />
+        </div>
+        {nfErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{nfErr}</p>}
+        <ModalActions disabled={notifyLoading} onCancel={() => setShowNotifyModal(false)} onConfirm={submitNotify} text={notifyLoading ? "Saving..." : "Save notification"} />
+      </Modal>}
+
+      {/* ── BULK POST MODAL ───────────────────────────── */}
+      {showBulkPostModal && <Modal onClose={() => setShowBulkPostModal(false)} z={119}>
+        <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>Post multiple shifts</h2>
+        <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>Fast mode for posting several normal shifts. For swaps or preferred applicants, use the regular single-post flow.</p>
+        <LabeledInput label="Your name" value={bulkName} onChange={setBulkName} placeholder="Albert Einstein" />
+        <LabeledInput label="Your email" type="email" value={bulkEmail} onChange={v => { setBulkEmail(v); setBulkEmailOk(false); }} placeholder="aeinstein@cityofevanston.org" />
+        <CheckBox checked={bulkEmailOk} onChange={setBulkEmailOk}>I confirm this is my correct email.</CheckBox>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#5e6675", textTransform: "uppercase", letterSpacing: "0.5px" }}>Rows</div>
+          <button onClick={addBulkRow} style={{ ...btn2, padding: "6px 10px", fontSize: 12 }}>Add row</button>
+        </div>
+        {bulkRows.map((row, idx) => {
+          const result = bulkResults[row.tempId];
+          return <div key={row.tempId} style={{ border: "0.5px solid #e0e3e8", borderRadius: 14, padding: 12, marginBottom: 10, background: "#f6f7f9" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8 }}><b style={{ fontSize: 13 }}>Shift {idx + 1}</b>{bulkRows.length > 1 && <button onClick={() => removeBulkRow(row.tempId)} style={{ ...btn2, padding: "3px 8px", fontSize: 11 }}>Remove</button>}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <select style={F} value={row.type} onChange={e => updateBulkRow(row.tempId, { type: e.target.value })}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+              <select style={F} value={row.time} onChange={e => updateBulkRow(row.tempId, { time: e.target.value })}><option value="early">Early</option><option value="late">Late</option></select>
+            </div>
+            <input style={{ ...F, marginBottom: 8 }} type="date" value={row.date} onChange={e => updateBulkRow(row.tempId, { date: e.target.value })} />
+            <input style={F} value={row.note} onChange={e => updateBulkRow(row.tempId, { note: e.target.value })} placeholder="Private LC note, optional" />
+            {result?.status === "needs_selection" && <div style={{ marginTop: 8 }}><WarningBox>Vector found multiple shifts for this row. Choose the exact shift, then validate again.</WarningBox><select style={F} value={row.selectedVectorShiftId} onChange={e => updateBulkRow(row.tempId, { selectedVectorShiftId: e.target.value })}><option value="">Select a Vector shift...</option>{arr(result.shifts).map((s, idx) => <option key={bulkShiftKey(s, idx)} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}</select></div>}
+            {result?.status === "valid" && <div style={{ marginTop: 8, fontSize: 12, color: "#27500A" }}>Ready: {result.data?.selectedPosterShift ? vectorShiftLabel(result.data.selectedPosterShift) : "Vector confirmed"}</div>}
+            {result?.warnings?.length > 0 && <div style={{ marginTop: 8 }}>{result.warnings.map(w => <WarningBox key={w}>{w}</WarningBox>)}</div>}
+            {result?.status === "error" && <div style={{ marginTop: 8, fontSize: 12, color: "#8A1F1F" }}>{result.error}</div>}
+            {result?.status === "empty" && <div style={{ marginTop: 8, fontSize: 12, color: "#8A1F1F" }}>{result.error}</div>}
+          </div>;
+        })}
+        {bulkErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{bulkErr}</p>}
+        {bulkStage === "review" && <InfoBlock badge="review">{Object.values(bulkResults).filter(r => r.status === "valid").length} row(s) ready to post. Rows with errors or exact-shift selections needed will not be submitted.</InfoBlock>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+          <button onClick={() => setShowBulkPostModal(false)} style={btn2}>Cancel</button>
+          <button disabled={bulkLoading} onClick={validateBulkPosts} style={btn2}>{bulkLoading ? "Checking..." : "Validate rows"}</button>
+          <button disabled={bulkLoading || bulkStage !== "review" || Object.values(bulkResults).filter(r => r.status === "valid").length === 0} onClick={confirmBulkPosts} style={{ ...btnP, opacity: bulkLoading || bulkStage !== "review" || Object.values(bulkResults).filter(r => r.status === "valid").length === 0 ? 0.55 : 1 }}>{bulkLoading ? "Posting..." : "Post valid rows"}</button>
+        </div>
+      </Modal>}
+
       {/* ── POST MODAL ───────────────────────────────── */}
       {showPostModal && <Modal onClose={() => setShowPostModal(false)}>
-        <h2 style={{ fontSize: 18, margin: "0 0 20px" }}>Post a shift</h2>
-        <LabeledInput label="Your name (first and last)" value={pf.name} onChange={v => setPf(p=>({...p,name:v}))} placeholder="Albert Einstein" />
-        <LabeledInput label="Your email" hint="use the same email every time" type="email" value={pf.email} onChange={v => { setPf(p=>({...p,email:v})); setPfEmailOk(false); }} placeholder="aeinstein@cityofevanston.org" />
-        <CheckBox checked={pfEmailOk} onChange={setPfEmailOk}>I confirm this is the correct email address and that I will use this same email for future posts/applications.</CheckBox>
-        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Shift type</label>
-            <select style={F} value={pf.type} onChange={e => setPf(p=>({...p,type:e.target.value}))}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+        <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Post a shift</h2>
+        <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 18px", lineHeight: 1.5 }}>First confirm who you are, then choose whether you want to post one assigned Vector shift or several.</p>
+
+        {postStep === "identity" && <>
+          <LabeledInput label="Your name (first and last)" value={pf.name} onChange={v => setPf(p=>({...p,name:v}))} placeholder="Albert Einstein" />
+          <LabeledInput label="Your email" hint="use the same email every time" type="email" value={pf.email} onChange={v => { setPf(p=>({...p,email:v})); setPfEmailOk(false); }} placeholder="aeinstein@cityofevanston.org" />
+          <CheckBox checked={pfEmailOk} onChange={setPfEmailOk}>I confirm this is the correct email address and that I will use this same email for future posts/applications.</CheckBox>
+          {pfErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{pfErr}</p>}
+          <ModalActions disabled={actionLoading} onCancel={() => setShowPostModal(false)} onConfirm={verifyPosterIdentity} text={actionLoading ? "Checking..." : "Next"} />
+        </>}
+
+        {postStep === "mode" && <>
+          <InfoBlock badge="confirmed">Vector confirmed {pf.name || "this person"}. What do you want to post?</InfoBlock>
+          <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+            <button type="button" style={{ ...btn2, textAlign: "left", padding: 14 }} onClick={() => { setMultiMode(false); setPostStep("single"); setPfErr(""); }}><b>Post one shift</b><br/><span style={{ fontSize: 12, color: "#5e6675" }}>Choose a date, then select the exact Vector shift you are giving up.</span></button>
+            <button type="button" style={{ ...btn2, textAlign: "left", padding: 14 }} onClick={() => { setMultiMode(true); setPostStep("multi"); setMultiErr(""); }}><b>Post multiple shifts</b><br/><span style={{ fontSize: 12, color: "#5e6675" }}>Choose a date range and check the assigned Vector shifts you want to post.</span></button>
           </div>
-          <div style={{ flex: 1 }}>
-            <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Time</label>
-            <select style={F} value={pf.time} onChange={e => setPf(p=>({...p,time:e.target.value}))}><option value="early">Early</option><option value="late">Late</option></select>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+            <button type="button" style={btn2} onClick={() => setPostStep("identity")}>Back</button>
+            <button type="button" style={btn2} onClick={() => setShowPostModal(false)}>Cancel</button>
           </div>
+        </>}
+
+        {postStep === "multi" && (() => {
+          const selectedRows = selectedMultiRows();
+          const currentRow = selectedRows[Math.min(multiConfigIndex, Math.max(selectedRows.length - 1, 0))];
+          const currentCfg = currentRow?.cfg || {};
+          const currentShift = currentRow?.shift;
+          const currentKey = currentRow?.key;
+          const currentType = currentShift ? inferTypeFromVectorShift(currentShift) : "guard";
+          const currentTime = currentShift ? inferTimeFromVectorShift(currentShift) : "early";
+          return <div style={{ padding: 16, border: "0.5px solid #85B7EB", borderRadius: 12, background: "#F5FAFF", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#0C447C", marginBottom: 6 }}>Post multiple from Vector</div>
+            <div style={{ fontSize: 12, color: "#5e6675", lineHeight: 1.5, marginBottom: 12 }}>First choose the assigned Vector shifts you want to post. Then the app will walk through them one at a time for normal/preferred/swap details.</div>
+
+            {multiStage === "pick" && <>
+              <div style={{ display: "flex", gap: 12 }}>
+                <LabeledInput label="Start date" type="date" min={chicagoTodayStr()} value={multiStartDate} onChange={setMultiStartDate} />
+                <LabeledInput label="End date" type="date" min={multiStartDate || chicagoTodayStr()} value={multiEndDate} onChange={setMultiEndDate} />
+              </div>
+              <button type="button" disabled={multiLoading} onClick={loadMultiVectorShifts} style={{ ...btn2, marginBottom: 12 }}>{multiLoading ? "Loading..." : "Load my Vector shifts"}</button>
+              {multiErr && <p style={{ fontSize: 13, color: "#A32D2D", margin: "4px 0 12px" }}>{multiErr}</p>}
+              {multiShifts.length > 0 && <div style={{ display: "grid", gap: 10 }}>
+                {multiShifts.map((s, idx) => {
+                  const key = bulkShiftKey(s, idx);
+                  const cfg = multiSelected[key] || {};
+                  const selected = cfg.selected === true;
+                  const type = inferTypeFromVectorShift(s);
+                  const time = inferTimeFromVectorShift(s);
+                  return <div key={key} style={{ border: `0.5px solid ${selected ? "#85B7EB" : "#e0e3e8"}`, borderRadius: 12, background: selected ? "#fff" : "#f6f7f9", padding: 12 }}>
+                    <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected} onChange={e => updateMultiRow(key, { selected: e.target.checked })} style={{ marginTop: 4 }} />
+                      <span style={{ flex: 1 }}>
+                        <b>{fmtDate(vectorShiftDate(s))} · {time === "late" ? "Late" : "Early"} {type === "manager" ? "Manager" : "Guard"}</b><br/>
+                        <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(s)}</span>
+                      </span>
+                    </label>
+                  </div>;
+                })}
+              </div>}
+              {multiShifts.length > 0 && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 12 }}>
+                <button type="button" style={btn2} onClick={() => setPostStep("mode")}>Back</button>
+                <button type="button" disabled={multiLoading || selectedRows.length === 0} onClick={startMultiConfigure} style={{ ...btnP, opacity: multiLoading || selectedRows.length === 0 ? 0.55 : 1 }}>Next: configure selected ({selectedRows.length})</button>
+              </div>}
+            </>}
+
+            {multiStage === "configure" && currentRow && <>
+              <InfoBlock badge={`${multiConfigIndex + 1}/${selectedRows.length}`}>Configure this selected shift. The app checks this shift before moving to the next one, so errors get caught immediately.</InfoBlock>
+              <div style={{ padding: 12, border: "0.5px solid #c7ccd4", borderRadius: 12, background: "#fff", marginBottom: 12 }}>
+                <b>{fmtDate(vectorShiftDate(currentShift))} · {currentTime === "late" ? "Late" : "Early"} {currentType === "manager" ? "Manager" : "Guard"}</b><br/>
+                <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(currentShift)}</span>
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", marginBottom: 6 }}>Is this a normal post, preferred applicant, or requested swap?</div>
+              <select style={{ ...F, marginBottom: 8 }} value={currentCfg.mode || "normal"} onChange={e => updateMultiRow(currentKey, { mode: e.target.value })}>
+                <option value="normal">Normal post</option>
+                <option value="preferred">Preferred applicant</option>
+                <option value="swap">Requested swap</option>
+              </select>
+              <input style={{ ...F, marginBottom: 8 }} value={currentCfg.note || ""} onChange={e => updateMultiRow(currentKey, { note: e.target.value })} placeholder="Private LC note, optional" />
+              {(currentCfg.mode || "normal") === "preferred" && <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+                <InfoBlock badge="preferred">Preferred applicants are advisory only. LCs can still approve someone else.</InfoBlock>
+                <input style={F} value={currentCfg.prefName || ""} onChange={e => updateMultiRow(currentKey, { prefName: e.target.value })} placeholder="Preferred applicant name" />
+                <input style={F} type="email" value={currentCfg.prefEmail || ""} onChange={e => updateMultiRow(currentKey, { prefEmail: e.target.value })} placeholder="Preferred applicant email" />
+                <textarea style={{ ...F, minHeight: 54 }} value={currentCfg.prefReason || ""} onChange={e => updateMultiRow(currentKey, { prefReason: e.target.value })} placeholder="Reason required" />
+              </div>}
+              {(currentCfg.mode || "normal") === "swap" && <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+                <InfoBlock badge="swap">This is not guaranteed. Your swap partner still needs to apply with the same email you enter here.</InfoBlock>
+                <input style={F} value={currentCfg.swapName || ""} onChange={e => updateMultiRow(currentKey, { swapName: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })} placeholder="Swap partner name" />
+                <input style={F} type="email" value={currentCfg.swapEmail || ""} onChange={e => updateMultiRow(currentKey, { swapEmail: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })} placeholder="Swap partner email" />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <select style={F} value={currentCfg.swapType || "guard"} onChange={e => updateMultiRow(currentKey, { swapType: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+                  <select style={F} value={currentCfg.swapTime || "early"} onChange={e => updateMultiRow(currentKey, { swapTime: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })}><option value="early">Early</option><option value="late">Late</option></select>
+                </div>
+                <input style={F} type="date" min={chicagoTodayStr()} value={currentCfg.swapDate || vectorShiftDate(currentShift)} onChange={e => updateMultiRow(currentKey, { swapDate: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })} />
+                {currentCfg.swapMismatchWarning && <WarningBox>
+                  <b>Double-check this swap:</b> {currentCfg.swapMismatchWarning}
+                  <div style={{ marginTop: 8 }}>
+                    <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", color: "#8A5A00" }}>
+                      <input type="checkbox" checked={currentCfg.swapMismatchConfirmed === true} onChange={e => updateMultiRow(currentKey, { swapMismatchConfirmed: e.target.checked })} style={{ marginTop: 3 }} />
+                      <span>I confirm this is the exact shift the swap partner is giving up.</span>
+                    </label>
+                  </div>
+                </WarningBox>}
+              </div>}
+              {multiErr && <p style={{ fontSize: 13, color: "#A32D2D", margin: "4px 0 12px" }}>{multiErr}</p>}
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, marginTop: 12 }}>
+                <button type="button" style={btn2} onClick={() => { setMultiErr(""); if (multiConfigIndex === 0) setMultiStage("pick"); else setMultiConfigIndex(i => i - 1); }}>Back</button>
+                <button type="button" disabled={multiLoading} style={{ ...btnP, opacity: multiLoading ? 0.55 : 1 }} onClick={nextMultiConfig}>{multiLoading ? "Checking..." : multiConfigIndex < selectedRows.length - 1 ? "Check and next shift" : "Check and review selected shifts"}</button>
+              </div>
+            </>}
+
+            {multiStage === "review" && <>
+              <InfoBlock badge="review">Review the selected shifts below. The app will validate all of them before posting anything.</InfoBlock>
+              {multiErr && <p style={{ fontSize: 13, color: "#A32D2D", margin: "4px 0 12px" }}>{multiErr}</p>}
+              <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>
+                {selectedRows.map((row, idx) => {
+                  const cfg = row.cfg || {};
+                  const mode = cfg.mode || "normal";
+                  const dry = multiDryRunResults.find(r => r.row?.key === row.key);
+                  return <div key={`review-${row.key}`} style={{ padding: 10, border: "0.5px solid #e0e3e8", borderRadius: 10, background: "#fff" }}>
+                    <b>{idx + 1}. {fmtDate(vectorShiftDate(row.shift))} · {inferTimeFromVectorShift(row.shift) === "late" ? "Late" : "Early"} {inferTypeFromVectorShift(row.shift) === "manager" ? "Manager" : "Guard"}</b><br/>
+                    <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(row.shift)}</span><br/>
+                    <span style={{ fontSize: 12, color: mode === "swap" ? "#0C447C" : mode === "preferred" ? "#8A5A00" : "#5e6675" }}>{mode === "swap" ? `Swap with ${cfg.swapName || "(missing name)"} on ${fmtDate(cfg.swapDate)}` : mode === "preferred" ? `Preferred: ${cfg.prefName || "(missing name)"}` : "Normal post"}</span>
+                    {dry && !dry.ok && <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 4 }}>Needs attention: {dry.error}</div>}
+                    {dry && dry.ok && <div style={{ fontSize: 12, color: "#2F6F46", marginTop: 4 }}>Validated</div>}
+                  </div>;
+                })}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                <button type="button" style={btn2} onClick={() => { setMultiErr(""); setMultiStage("configure"); setMultiConfigIndex(Math.max(0, selectedRows.length - 1)); }}>Back</button>
+                <button type="button" disabled={multiLoading || selectedRows.length === 0} onClick={confirmMultiPostFromVector} style={{ ...btnP, opacity: multiLoading || selectedRows.length === 0 ? 0.55 : 1 }}>{multiLoading ? "Checking..." : `Validate and post (${selectedRows.length})`}</button>
+              </div>
+            </>}
+          </div>;
+        })()}
+
+        {postStep === "single" && <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <button type="button" style={btn2} onClick={() => setPostStep("mode")}>Back</button>
+          <span style={{ fontSize: 12, color: "#5e6675" }}>Posting as <b>{pf.name}</b></span>
         </div>
-        <LabeledInput label="Date" type="date" value={pf.date} onChange={v => setPf(p=>({...p,date:v}))} />
-        {postDateWarnings(pf.date).map(w => <WarningBox key={w}>{w}</WarningBox>)}
+        {!pf.lcOverride && <>
+          <LabeledInput label="What date is the shift?" type="date" min={chicagoTodayStr()} value={pf.date} onChange={v => { setPf(p=>({...p,date:v,selectedVectorShiftId:""})); setSingleSelectedKey(""); setSingleVectorShifts([]); setSingleVectorErr(""); }} />
+          {postDateWarnings(pf.date).filter(w => !w.includes("already passed")).map(w => <WarningBox key={w}>{w}</WarningBox>)}
+          <button type="button" disabled={singleVectorLoading || !pf.date} onClick={loadSingleVectorShifts} style={{ ...btn2, marginBottom: 12 }}>{singleVectorLoading ? "Loading..." : "Load my Vector shifts for this date"}</button>
+          {singleVectorErr && <p style={{ fontSize: 13, color: "#A32D2D", margin: "4px 0 12px" }}>{singleVectorErr}</p>}
+          {singleVectorShifts.length > 0 && <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+            {singleVectorShifts.map((s, idx) => {
+              const rowKey = bulkShiftKey(s, idx);
+              const selected = singleSelectedKey === rowKey;
+              const type = inferTypeFromVectorShift(s);
+              const time = inferTimeFromVectorShift(s);
+              return <button type="button" key={rowKey} onClick={() => { setSingleSelectedKey(rowKey); setPf(p=>({...p,selectedVectorShiftId:String(s.shift_id || ""), type, time, date: vectorShiftDate(s) || p.date})); }} style={{ ...btn2, textAlign: "left", borderColor: selected ? "#85B7EB" : "#c7ccd4", background: selected ? "#F5FAFF" : "#fff", padding: 12 }}>
+                <b>{fmtDate(vectorShiftDate(s) || pf.date)} · {time === "late" ? "Late" : "Early"} {type === "manager" ? "Manager" : "Guard"}</b><br/>
+                <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(s)}</span>
+              </button>;
+            })}
+          </div>}
+          {pf.selectedVectorShiftId && <InfoBlock badge="selected">Selected Vector shift: {singleVectorShifts.find(s => String(s.shift_id) === String(pf.selectedVectorShiftId)) ? vectorShiftLabel(singleVectorShifts.find(s => String(s.shift_id) === String(pf.selectedVectorShiftId))) : `${pf.time} ${pf.type}`}</InfoBlock>}
+        </>}
+        {pf.lcOverride && <>
+          <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Shift type</label>
+              <select style={F} value={pf.type} onChange={e => setPf(p=>({...p,type:e.target.value}))}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Time</label>
+              <select style={F} value={pf.time} onChange={e => setPf(p=>({...p,time:e.target.value}))}><option value="early">Early</option><option value="late">Late</option></select>
+            </div>
+          </div>
+          <LabeledInput label="Date" type="date" min={chicagoTodayStr()} value={pf.date} onChange={v => setPf(p=>({...p,date:v}))} />
+        </>}
         {lcAuth && <CheckBox checked={pf.lcOverride} onChange={v => { setPf(p=>({...p,lcOverride:v,selectedVectorShiftId:""})); setPostVectorResult(null); }}>
           LC-created open shift, post without poster Vector confirmation.
         </CheckBox>}
@@ -1034,28 +1944,43 @@ export default function ShiftBoard() {
           <div style={{ fontSize: 13, fontWeight: 700, color: "#0C447C", marginBottom: 8 }}>Choose exact Vector shift</div>
           <select style={F} value={pf.selectedVectorShiftId} onChange={e => setPf(p=>({...p,selectedVectorShiftId:e.target.value}))}>
             <option value="">Select a Vector shift...</option>
-            {arr(postVectorResult.shifts).map(s => <option key={s.shift_id} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}
+            {arr(postVectorResult.shifts).map((s, idx) => <option key={bulkShiftKey(s, idx)} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}
           </select>
         </div>}
         {postVectorResult?.needsShiftSelection && postVectorResult.selectionFor === "swap" && <div style={{ padding: 16, border: "0.5px solid #85B7EB", borderRadius: 12, background: "#E6F1FB", marginBottom: 16 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#0C447C", marginBottom: 8 }}>Choose exact swap partner Vector shift</div>
           <select style={F} value={pf.selectedSwapVectorShiftId} onChange={e => setPf(p=>({...p,selectedSwapVectorShiftId:e.target.value}))}>
             <option value="">Select their Vector shift...</option>
-            {arr(postVectorResult.shifts).map(s => <option key={s.shift_id} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}
+            {arr(postVectorResult.shifts).map((s, idx) => <option key={bulkShiftKey(s, idx)} value={s.shift_id}>{vectorShiftLabel(s)}</option>)}
           </select>
         </div>}
         {pfErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{pfErr}</p>}
-        <ModalActions disabled={actionLoading} onCancel={() => setShowPostModal(false)} onConfirm={async () => { if (await validatePost()) setPostConfirmOpen(true); }} text="Review post" />
+        </>}
+        {postStep === "single" && <ModalActions disabled={actionLoading || singleVectorLoading} onCancel={() => setShowPostModal(false)} onConfirm={async () => { if (await validatePost()) setPostConfirmOpen(true); }} text="Review post" />}
       </Modal>}
 
       {/* Post confirmation */}
-      {postConfirmOpen && <Modal onClose={() => setPostConfirmOpen(false)} z={140}>
-        <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Confirm shift post</h2>
-        <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>Review this before it goes on the public board.</p>
-        {postWarnings.length > 0 && <div style={{ marginBottom: 12 }}>{postWarnings.map(w => <WarningBox key={w}>{w}</WarningBox>)}</div>}
-        <SummaryBox rows={[["Name",pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Vector",pf.lcOverride?`LC-created open shift · ${pf.lcShiftLength} hrs`:postVectorResult?.selectedPosterShift?vectorShiftLabel(postVectorResult.selectedPosterShift):"Confirmed"],["Swap",pf.isSwap?`Yes, with ${pf.swapName}`:"No"],["Preferred",pf.hasPreferred?`Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
-        <ModalActions disabled={actionLoading} onCancel={() => setPostConfirmOpen(false)} onConfirm={confirmPost} text="Post shift" />
-      </Modal>}
+      {postConfirmOpen && (() => {
+        const swapMismatch = pf.isSwap ? swapTimeMismatchNotice(pf.swapTime, postVectorResult?.selectedSwapShift) : null;
+        return <Modal onClose={() => setPostConfirmOpen(false)} z={140}>
+          <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Confirm shift post</h2>
+          <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>Review this before it goes on the public board.</p>
+          {postWarnings.length > 0 && <div style={{ marginBottom: 12 }}>{postWarnings.map(w => <WarningBox key={w}>{w}</WarningBox>)}</div>}
+          {swapMismatch && <WarningBox>
+            <b>Confirm the swap partner's exact Vector shift.</b><br/>
+            You marked their shift as <b>{swapMismatch.selected}</b>, but Vector says the exact matched shift looks like <b>{swapMismatch.actualLabel}</b>.
+            <div style={{ marginTop: 6 }}>Exact Vector shift: <b>{swapMismatch.vectorLabel}</b></div>
+            <div style={{ marginTop: 10 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", color: "#8A5A00" }}>
+                <input type="checkbox" checked={singleSwapMismatchOk} onChange={e => setSingleSwapMismatchOk(e.target.checked)} style={{ marginTop: 3 }} />
+                <span>I confirm this is the exact shift the swap partner is giving up.</span>
+              </label>
+            </div>
+          </WarningBox>}
+          <SummaryBox rows={[["Name",postVectorResult?.posterVector?.vectorUser?.full_name || pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Vector",pf.lcOverride?`LC-created open shift · ${pf.lcShiftLength} hrs`:postVectorResult?.selectedPosterShift?vectorShiftLabel(postVectorResult.selectedPosterShift):"Confirmed"],["Swap",pf.isSwap?postVectorResult?.swapVector?.vectorUser?.full_name ? `Yes, with ${postVectorResult.swapVector.vectorUser.full_name}` : `Yes, with ${pf.swapName}`:"No"],pf.isSwap && postVectorResult?.selectedSwapShift?["Swap partner Vector shift",vectorShiftLabel(postVectorResult.selectedSwapShift)]:null,["Preferred",pf.hasPreferred?postVectorResult?.payloadPreview?.preferred_vector_full_name ? `Yes: ${postVectorResult.payloadPreview.preferred_vector_full_name}` : `Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
+          <ModalActions disabled={actionLoading || (swapMismatch && !singleSwapMismatchOk)} onCancel={() => setPostConfirmOpen(false)} onConfirm={confirmPost} text="Post shift" />
+        </Modal>;
+      })()}
 
       {/* ── APPLY MODAL ──────────────────────────────── */}
       {showApplyModal && (() => {
@@ -1081,7 +2006,7 @@ export default function ShiftBoard() {
               kind: "self_shift",
               shiftId: shift.id,
               email,
-              shift: { id: shift.id, poster_name: shift.poster_name, poster_email: shift.poster_email, date: shift.date, type: shift.type, time: shift.time },
+              shift: { id: shift.id, poster_name: canonicalPosterName(shift), poster_email: shift.poster_email, date: shift.date, type: shift.type, time: shift.time },
               message: "This is your own shift. You cannot apply to it, but you can delete the posting instead.",
             });
             setAErr("");
@@ -1119,7 +2044,7 @@ export default function ShiftBoard() {
           <div style={{ fontSize: 13, color: "#5e6675", marginBottom: 20, display: "flex", gap: 6, flexWrap: "wrap" }}>
             <span style={B(c.bg,c.text)}>{shift.type}</span>
             <span style={B("#f6f7f9","#5e6675")}>{shift.time}</span>
-            <span>{fmtDate(shift.date)} — posted by {shift.poster_name}</span>
+            <span>{fmtDate(shift.date)} — posted by {canonicalPosterName(shift)}</span>
           </div>
           <LabeledInput label="Your name (first and last)" value={aName} onChange={setAName} placeholder="Albert Einstein" />
           <LabeledInput label="Your email" hint="use the same email every time" type="email" value={aEmail} onChange={v => { setAEmail(v); setAEmailOk(false); setASpecialIds([]); }} placeholder="aeinstein@cityofevanston.org" />
@@ -1139,7 +2064,7 @@ export default function ShiftBoard() {
                 setAIdenticalIds(prev => e.target.checked ? [...prev, s.id] : prev.filter(x => x !== s.id));
                 if (!e.target.checked) setASpecialIds(prev => prev.filter(x => x !== s.id));
               }} />
-              {fmtDate(shift.date)} {shift.type} {shift.time} — posted by {s.poster_name}
+              {fmtDate(shift.date)} {shift.type} {shift.time} — posted by {canonicalPosterName(s)}
             </label>)}
           </div>}
 
@@ -1154,9 +2079,9 @@ export default function ShiftBoard() {
               return <div key={s.id} style={{ padding: 12, borderRadius: 12, border: `0.5px solid ${isSwap ? "#85B7EB" : "#D9B451"}`, background: isSwap ? "#E6F1FB" : "#FFF9E8", marginBottom: 16 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: isSwap ? "#0C447C" : "#8A5A00", marginBottom: 8 }}>{isSwap ? "Swap verification" : "Preferred applicant verification"}</div>
                 {isSwap ? (
-                  <div style={{ fontSize: 13, color: "#5e6675", lineHeight: 1.5 }}>For <b>{s.poster_name}</b>'s {s.type} {s.time} shift on {fmtDate(s.date)}: you would take their shift, and they would take your {s.swap_partner_type} {s.swap_partner_time} shift on {fmtDate(s.swap_partner_date)}.</div>
+                  <div style={{ fontSize: 13, color: "#5e6675", lineHeight: 1.5 }}>For <b>{canonicalPosterName(s)}</b>'s {s.type} {s.time} shift on {fmtDate(s.date)}: you would take their shift, and they would take your {s.swap_partner_type} {s.swap_partner_time} shift on {fmtDate(s.swap_partner_date)}.</div>
                 ) : (
-                  <div style={{ fontSize: 13, color: "#5e6675", lineHeight: 1.5 }}>For <b>{s.poster_name}</b>'s {s.type} {s.time} shift on {fmtDate(s.date)}: you were listed as the preferred applicant, but approval is not guaranteed, even if money or another arrangement was involved.</div>
+                  <div style={{ fontSize: 13, color: "#5e6675", lineHeight: 1.5 }}>For <b>{canonicalPosterName(s)}</b>'s {s.type} {s.time} shift on {fmtDate(s.date)}: you were listed as the preferred applicant, but approval is not guaranteed, even if money or another arrangement was involved.</div>
                 )}
                 <CheckBox checked={aSpecialIds.includes(s.id)} onChange={v => setASpecialIds(prev => v ? [...new Set([...prev, s.id])] : prev.filter(x => x !== s.id))}>{isSwap ? "I confirm this swap information is correct." : "I confirm I understand I was listed as preferred, but approval is not guaranteed."}</CheckBox>
                 {!aSpecialIds.includes(s.id) && <div style={{ marginTop: -8, marginBottom: 12, fontSize: 12, color: "#8A1F1F" }}>If this is not correct, do not apply. Contact an LC.</div>}
@@ -1173,7 +2098,7 @@ export default function ShiftBoard() {
       {pendingApply && <Modal onClose={() => setPendingApply(null)} z={140}>
         <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>Confirm application</h2>
         <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>Make sure this is right before submitting.</p>
-        <SummaryBox rows={[["Name",pendingApply.name],["Email",pendingApply.email],["Vector hours",pendingApply.vectorReviews?.[0]?.eligibility?.week ? `${pendingApply.vectorReviews[0].eligibility.week.vectorWeekHours} current · ${pendingApply.vectorReviews[0].eligibility.week.projectedAfterApproval} projected${pendingApply.vectorReviews[0].eligibility.week.wouldBeOT?" · OT":""}` : "Checked"],["Note",pendingApply.note||"None"],["Applying to",pendingApply.shiftIds.length+" shift"+(pendingApply.shiftIds.length>1?"s":"")]]} />
+        <SummaryBox rows={[["Name",pendingApply.vectorReviews?.[0]?.eligibility?.vectorUser?.full_name || pendingApply.name],["Email",pendingApply.email],["Vector hours",pendingApply.vectorReviews?.[0]?.eligibility?.week ? `${pendingApply.vectorReviews[0].eligibility.week.vectorWeekHours} current · ${pendingApply.vectorReviews[0].eligibility.week.projectedAfterApproval} projected${pendingApply.vectorReviews[0].eligibility.week.wouldBeOT?" · OT":""}` : "Checked"],["Note",pendingApply.note||"None"],["Applying to",pendingApply.shiftIds.length+" shift"+(pendingApply.shiftIds.length>1?"s":"")]]} />
         <ModalActions disabled={actionLoading} onCancel={() => setPendingApply(null)} onConfirm={confirmApply} text="Submit application" />
       </Modal>}
 
@@ -1189,9 +2114,9 @@ export default function ShiftBoard() {
         const isOt = currentHours ? !!currentHours.wouldBeOT : (!!app.applicant_vector_would_be_ot || Number(app.hours_after_shift) > 40);
         return <Modal onClose={() => setPendingApproval(null)} z={145}>
           <h2 style={{ fontSize: 18, margin: "0 0 8px", color: isOt ? "#8A1F1F" : "#172033" }}>Confirm approval</h2>
-          <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>This will approve the applicant, close this shift, decline other applicants, and remove this applicant from other pending applications on the same day.</p>
+          <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>This approves the applicant, closes the shift, and declines their other same-day applications. The shift then lands in the <b>To-do</b> tab so an LC can update Vector manually.</p>
           {isOt && <div style={{ borderRadius: 12, padding: "10px 12px", marginBottom: 12, fontSize: 13, background: "#FFF6F6", border: "0.5px solid #D6A4A4", color: "#8A1F1F" }}><b>OT warning:</b> Vector projects {currentHours?.projectedAfterApproval ?? app.applicant_vector_projected_hours ?? app.hours_after_shift} hours after this shift.</div>}
-          <SummaryBox rows={[["Applicant",app.applicant_name],["Email",app.applicant_email],["Shift",`${fmtDate(shift.date)} ${shift.type} ${shift.time}`],["Posted by",shift.poster_name],["Hours at application",app.applicant_vector_week_hours != null ? `${app.applicant_vector_week_hours} current · ${app.applicant_vector_projected_hours} projected${app.applicant_vector_would_be_ot?" · OT":""}` : `${app.hours_after_shift}${app.applicant_vector_would_be_ot?" · OT":""}`],currentHours?["Hours checked now",`${currentHours.vectorWeekHours} current · ${currentHours.projectedAfterApproval} projected${currentHours.wouldBeOT?" · OT":""}`]:["Hours checked now",approvalPreflightLoading?"Checking Vector...":"Not checked yet"],app.applicant_note?["App note",app.applicant_note]:null,["Approved this week",st.priorApprovals.length?st.priorApprovals.map(p=>`${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs)`).join("; "):"None"]].filter(Boolean)} />
+          <SummaryBox rows={[["Applicant",canonicalAppName(app)],["Email",app.applicant_email],["Posted shift",`${fmtDate(shift.date)} · ${storedVectorShiftLabel(shift, "poster")}`],shift.is_swap && emailMatches(app.applicant_email, shift.swap_partner_email) ? ["Swap partner gives up",`${fmtDate(shift.swap_partner_date)} · ${storedVectorShiftLabel(shift, "swap_partner")}`] : null,["Posted by",canonicalPosterName(shift)],["Hours at application",app.applicant_vector_week_hours != null ? `${app.applicant_vector_week_hours} current · ${app.applicant_vector_projected_hours} projected${app.applicant_vector_would_be_ot?" · OT":""}` : `${app.hours_after_shift}${app.applicant_vector_would_be_ot?" · OT":""}`],currentHours?["Hours checked now",`${currentHours.vectorWeekHours} current · ${currentHours.projectedAfterApproval} projected${currentHours.wouldBeOT?" · OT":""}`]:["Hours checked now",approvalPreflightLoading?"Checking Vector...":"Not checked yet"],app.applicant_note?["App note",app.applicant_note]:null,["Approved this week",st.priorApprovals.length?st.priorApprovals.map(p=>`${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs)`).join("; "):"None"]].filter(Boolean)} />
           <div style={{ marginBottom: 12 }}>
             {approvalPreflightLoading && <InfoBlock badge="Vector preflight">Checking Vector now...</InfoBlock>}
             {approvalPreflight && !approvalPreflight.success && <WarningBox>{approvalPreflight.error || "Vector preflight failed."}</WarningBox>}
@@ -1206,11 +2131,74 @@ export default function ShiftBoard() {
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 }}>
             <button onClick={() => setPendingApproval(null)} style={btn2}>Cancel</button>
-            <button disabled style={{ ...btnP, opacity: 0.45, background: "#1a2744" }}>Approve + Sync in Vector</button>
-            <button disabled={actionLoading || approvalPreflightLoading} onClick={confirmApproval} style={{ ...btnP, background: isOt ? "#8A1F1F" : "#1D9E75" }}>Approve in Shift Swap only, do not update Vector automatically</button>
+            <button disabled style={{ ...btnP, opacity: 0.45, background: "#1a2744" }} title="Vector sync writes are not enabled yet.">Approve + Vector sync (coming later)</button>
+            <button disabled={actionLoading || approvalPreflightLoading} onClick={confirmApproval} style={{ ...btnP, background: isOt ? "#8A1F1F" : "#1D9E75" }}>Approve (Shift Swap only)</button>
           </div>
         </Modal>;
       })()}
+
+      {/* ── MY ACTIVITY ───────────────────────────────── */}
+      {showMineModal && <Modal onClose={() => setShowMineModal(false)} z={120}>
+        <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>My activity</h2>
+        <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>Look up everything posted or applied for under your email.</p>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 16 }}>
+          <div style={{ flex: 1 }}>
+            <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Your email</label>
+            <input style={F} type="email" value={mineEmail} onChange={e => setMineEmail(e.target.value)} onKeyDown={e => { if (e.key === "Enter") lookupMine(); }} placeholder="aeinstein@cityofevanston.org" />
+          </div>
+          <button disabled={mineLoading || !mineEmail.trim()} onClick={() => lookupMine()} style={{ ...btnP, opacity: mineLoading || !mineEmail.trim() ? 0.6 : 1 }}>{mineLoading ? "Looking..." : "Look up"}</button>
+        </div>
+
+        {mine && <>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", margin: "0 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Shifts you posted</div>
+          {mine.posts.length === 0 && <Empty>No posted shifts under this email.</Empty>}
+          {mine.posts.map(s => (
+            <div key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <b>{fmtDate(s.date)}</b>
+                <span style={B(tc(s.type).bg, tc(s.type).text)}>{s.type}</span>
+                <span style={B("#f6f7f9","#5e6675")}>{s.time}</span>
+                {s.is_swap && <span style={B("#E6F1FB","#0C447C")}>swap</span>}
+                <StatusChip status={s.status} />
+                {s.status === "taken" && s.taken_by_name && <span style={{ fontSize: 11, color: "#8a92a0" }}>picked up by {s.approved_vector_full_name || s.taken_by_name}</span>}
+              </div>
+              {s.status === "open" && <button disabled={mineBusyId === `shift-${s.id}`} onClick={() => mineDeletePost(s.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `shift-${s.id}` ? 0.55 : 1 }}>{mineBusyId === `shift-${s.id}` ? "Deleting..." : "Delete"}</button>}
+            </div>
+          ))}
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", margin: "16px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Your applications</div>
+          {mine.apps.length === 0 && <Empty>No applications under this email.</Empty>}
+          {mine.apps.map(a => (
+            <div key={a.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <b>{a.shifts ? fmtDate(a.shifts.date) : "Shift"}</b>
+                {a.shifts && <span style={B(tc(a.shifts.type).bg, tc(a.shifts.type).text)}>{a.shifts.type}</span>}
+                {a.shifts && <span style={B("#f6f7f9","#5e6675")}>{a.shifts.time}</span>}
+                <StatusChip status={a.status} />
+                {a.shifts?.poster_name && <span style={{ fontSize: 11, color: "#8a92a0" }}>posted by {a.shifts.poster_vector_full_name || a.shifts.poster_name}</span>}
+              </div>
+              {a.status === "pending" && <button disabled={mineBusyId === `app-${a.id}`} onClick={() => mineWithdrawApp(a.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `app-${a.id}` ? 0.55 : 1 }}>{mineBusyId === `app-${a.id}` ? "Withdrawing..." : "Withdraw"}</button>}
+            </div>
+          ))}
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", margin: "16px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>Notify Me alerts</div>
+          {(!mine.watches || mine.watches.length === 0) && <Empty>No active notifications under this email.</Empty>}
+          {(mine.watches || []).map(w => (
+            <div key={w.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <b>{fmtDate(w.start_date)}–{fmtDate(w.end_date)}</b>
+                <span style={B(tc(w.type === "any" ? "guard" : w.type).bg, tc(w.type === "any" ? "guard" : w.type).text)}>{w.type === "any" ? "Any role" : w.type}</span>
+                <span style={B("#f6f7f9","#5e6675")}>{w.time === "any" ? "Any time" : w.time}</span>
+              </div>
+              <button disabled={mineBusyId === `watch-${w.id}`} onClick={() => mineUnsubscribeWatch(w.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `watch-${w.id}` ? 0.55 : 1 }}>{mineBusyId === `watch-${w.id}` ? "Turning off..." : "Unsubscribe"}</button>
+            </div>
+          ))}
+        </>}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+          <button onClick={() => setShowMineModal(false)} style={btn2}>Close</button>
+        </div>
+      </Modal>}
 
       {/* ── SELF / DUPLICATE APPLICATION PROMPTS ──────── */}
       {applyActionPrompt && <Modal onClose={() => setApplyActionPrompt(null)} z={155}>
@@ -1239,7 +2227,7 @@ export default function ShiftBoard() {
         const ac = pendingAppsFor(shift.id).length;
         return <Modal onClose={() => setDeleteShiftId(null)} z={150}>
           <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#8A1F1F" }}>Delete open shift?</h2>
-          <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>This will delete {shift.poster_name}'s {shift.type} {shift.time} shift on {fmtDate(shift.date)} and remove {ac} application{ac===1?"":"s"}.</p>
+          <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px" }}>This will delete {canonicalPosterName(shift)}'s {shift.type} {shift.time} shift on {fmtDate(shift.date)} and remove {ac} application{ac===1?"":"s"}.</p>
           <ModalActions disabled={deletingId === deleteShiftId} onCancel={() => setDeleteShiftId(null)} onConfirm={confirmDelete} text={deletingId === deleteShiftId ? "Deleting..." : "Delete shift"} danger />
         </Modal>;
       })()}
