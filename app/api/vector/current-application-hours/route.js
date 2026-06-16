@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireLC } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
-import { refreshCurrentHoursForApplicantWeek, shiftLengthForCurrentHours } from "@/lib/current-hours-refresh";
+import { refreshCurrentHoursForApplicantWeek, shiftLengthForCurrentHours, refreshStoredShiftVectorLengths } from "@/lib/current-hours-refresh";
 
 export async function POST(req) {
   const authErr = await requireLC();
@@ -37,7 +37,26 @@ export async function POST(req) {
       return NextResponse.json({ success: false, error: "Application not found." }, { status: 404 });
     }
 
-    const shiftLength = shiftLengthForCurrentHours(shift);
+    let currentShift = shift;
+    let shiftRefresh = null;
+    try {
+      shiftRefresh = await refreshStoredShiftVectorLengths({ sb, shift, updateDb: true, ignoreStoredShiftId: true, allowNameFallback: true, forceStandardBucketFallback: true });
+      if (shiftRefresh?.shift) currentShift = shiftRefresh.shift;
+    } catch (err) {
+      console.warn("Could not refresh live Vector shift length before checking current hours", err);
+    }
+
+    const needsManualPosterMatch = shiftRefresh?.skipped?.some((item) => item.prefix === "poster" && Array.isArray(item.candidates) && item.candidates.length);
+    const refreshedPoster = shiftRefresh?.refreshed?.some((item) => item.prefix === "poster");
+    if (needsManualPosterMatch && !refreshedPoster) {
+      return NextResponse.json({
+        success: false,
+        error: "This posted shift needs a manual Vector match before current projected hours can be trusted. Click Refresh open shift hours in LC view and choose the correct Vector shift.",
+        shiftRefresh,
+      }, { status: 409 });
+    }
+
+    const shiftLength = shiftLengthForCurrentHours(currentShift);
     if (!shiftLength || shiftLength <= 0) {
       return NextResponse.json({
         success: false,
@@ -65,6 +84,7 @@ export async function POST(req) {
       shiftId,
       appId,
       shiftLength,
+      shiftRefresh,
       vectorUser: refresh.vectorUser,
       currentWeekHours: refresh.currentWeekHours,
       weekStart: refresh.weekStart,

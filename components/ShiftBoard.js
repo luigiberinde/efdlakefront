@@ -348,6 +348,10 @@ export default function ShiftBoard() {
   const [bulkErr, setBulkErr] = useState("");
   const [bulkLoading, setBulkLoading] = useState(false);
   const [lcSearch, setLcSearch] = useState("");
+  const [refreshShiftHoursLoading, setRefreshShiftHoursLoading] = useState(false);
+  const [refreshShiftHoursSummary, setRefreshShiftHoursSummary] = useState(null);
+  const [manualMatchSelections, setManualMatchSelections] = useState({});
+  const [manualMatchBusy, setManualMatchBusy] = useState(null);
 
   // Post form
   const emptyPostForm = {name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:"",lcOverride:false,lcShiftLength:"",lcShiftStart:"",lcShiftEnd:"",selectedVectorShiftId:"",selectedSwapVectorShiftId:""};
@@ -1125,6 +1129,70 @@ export default function ShiftBoard() {
     }
   };
 
+  const refreshOpenShiftHoursFromVector = async () => {
+    const ok = typeof window === "undefined" ? true : window.confirm("Refresh stored hours for all currently open Vector-confirmed shifts? This only updates Shift Swap's stored shift lengths from live Vector and does not approve, delete, or change Vector.");
+    if (!ok) return;
+    setRefreshShiftHoursLoading(true);
+    setRefreshShiftHoursSummary(null);
+    try {
+      const res = await fetch("/api/vector/refresh-open-shift-hours", { method: "POST" });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        showToast(data.error || "Could not refresh open shift hours.");
+        return;
+      }
+      setRefreshShiftHoursSummary(data);
+      await refetchRef.current?.();
+      const manualCount = (data.skippedDetails || []).flatMap(d => d.skipped || []).filter(s => Array.isArray(s.candidates) && s.candidates.length).length;
+      const standardizedCount = (data.standardizedFallbacks || []).length;
+      showToast(`Refreshed ${data.refreshed || 0} open shift${(data.refreshed || 0) === 1 ? "" : "s"}${data.changed?.length ? ` · ${data.changed.length} length change${data.changed.length === 1 ? "" : "s"}` : ""}${standardizedCount ? ` · ${standardizedCount} standardized by Early/Late` : ""}${manualCount ? ` · ${manualCount} need manual match` : ""}${data.failed ? ` · ${data.failed} failed` : ""}`);
+    } catch (err) {
+      showToast("Could not refresh open shift hours.");
+    } finally {
+      setRefreshShiftHoursLoading(false);
+    }
+  };
+
+  const manualMatchItems = useMemo(() => {
+    const details = refreshShiftHoursSummary?.skippedDetails || [];
+    return details.flatMap(detail => (detail.skipped || [])
+      .filter(item => Array.isArray(item.candidates) && item.candidates.length)
+      .map(item => ({ ...item, shiftId: detail.id, date: detail.date, key: `${detail.id}:${item.prefix}` })));
+  }, [refreshShiftHoursSummary]);
+
+  const applyManualVectorShiftMatch = async (item) => {
+    const selected = manualMatchSelections[item.key];
+    if (!selected) { showToast("Pick the correct Vector shift first."); return; }
+    setManualMatchBusy(item.key);
+    try {
+      const res = await fetch("/api/vector/manual-match-shift-hours", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ shiftId: item.shiftId, prefix: item.prefix, vectorShiftId: selected }),
+      });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        showToast(data.error || "Could not update Vector match.");
+        return;
+      }
+      setRefreshShiftHoursSummary(prev => {
+        if (!prev) return prev;
+        const next = { ...prev, skippedDetails: (prev.skippedDetails || []).map(detail => {
+          if (String(detail.id) !== String(item.shiftId)) return detail;
+          return { ...detail, skipped: (detail.skipped || []).filter(s => s.prefix !== item.prefix) };
+        })};
+        next.skippedDetails = next.skippedDetails.filter(d => (d.skipped || []).length);
+        return next;
+      });
+      await refetchRef.current?.();
+      showToast(`Updated ${item.prefix === "swap_partner" ? "swap partner" : "posted"} shift match to ${data.matched?.shift_length ?? "current"} hrs.`);
+    } catch (err) {
+      showToast("Could not update Vector match.");
+    } finally {
+      setManualMatchBusy(null);
+    }
+  };
+
   const openApprovalModal = async (shiftId, appId) => {
     setPendingApproval({ shiftId, appId });
     setApprovalPreflight(null);
@@ -1620,6 +1688,35 @@ export default function ShiftBoard() {
           });
           return <>
             {renderDateFilter()}
+            <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#111827" }}>Vector shift hours</div>
+                <div style={{ fontSize: 11, color: "#8a92a0", marginTop: 2 }}>One-time cleanup: refresh currently open posted shift lengths from live Vector.</div>
+              </div>
+              <button type="button" onClick={refreshOpenShiftHoursFromVector} disabled={refreshShiftHoursLoading} style={{ ...btn2, opacity: refreshShiftHoursLoading ? 0.6 : 1 }}>{refreshShiftHoursLoading ? "Refreshing..." : "Refresh open shift hours"}</button>
+            </div>
+            {manualMatchItems.length > 0 && (
+              <div style={{ marginBottom: 16, border: "0.5px solid #D9B451", background: "#FFF9E8", borderRadius: 14, padding: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, color: "#8A5A00", marginBottom: 6 }}>Needs manual Vector match</div>
+                <div style={{ fontSize: 12, color: "#8A5A00", lineHeight: 1.5, marginBottom: 10 }}>These posted shifts could not be safely auto-matched because Vector found multiple possible shifts for that person/date. Pick the exact current Vector shift so the stored hours can be corrected. This only updates Shift Swap metadata, not Vector.</div>
+                {manualMatchItems.map(item => (
+                  <div key={item.key} style={{ borderTop: "0.5px solid rgba(138,90,0,0.22)", paddingTop: 10, marginTop: 10 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>{fmtDate(item.date)} · {item.prefix === "swap_partner" ? "Swap partner shift" : "Posted shift"} · Shift Swap ID {item.shiftId}</div>
+                    <select
+                      style={{ ...F, marginBottom: 8 }}
+                      value={manualMatchSelections[item.key] || ""}
+                      onChange={e => setManualMatchSelections(prev => ({ ...prev, [item.key]: e.target.value }))}
+                    >
+                      <option value="">Select the correct current Vector shift...</option>
+                      {item.candidates.map(c => (
+                        <option key={`${item.key}:${c.shift_id}:${c.shift_start || ""}`} value={c.shift_id}>{vectorShiftLabel(c)}</option>
+                      ))}
+                    </select>
+                    <button type="button" style={{ ...btnP, opacity: manualMatchBusy === item.key ? 0.6 : 1 }} disabled={manualMatchBusy === item.key} onClick={() => applyManualVectorShiftMatch(item)}>{manualMatchBusy === item.key ? "Updating..." : "Update this shift match"}</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ marginBottom: 16 }}>
               <label style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Search visible LC review page</label>
               <input style={F} value={lcSearch} onChange={e => setLcSearch(e.target.value)} placeholder="Search applicant, poster, swap partner, email, or Vector shift..." />

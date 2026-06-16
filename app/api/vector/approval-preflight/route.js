@@ -2,10 +2,7 @@ import { NextResponse } from "next/server";
 import { requireLC } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { validatePersonDate, checkApplicationEligibility } from "@/lib/vector-core";
-
-function lenForShift(shift) {
-  return Number(shift.poster_vector_shift_length || shift.lc_override_shift_length || 0);
-}
+import { refreshStoredShiftVectorLengths, shiftLengthForCurrentHours } from "@/lib/current-hours-refresh";
 
 function sameShiftBucket(a, b) {
   return (
@@ -42,6 +39,7 @@ function buildSwapApplicationContext(shift, applicantEmail) {
   };
 }
 
+
 export async function POST(req) {
   const err = await requireLC();
   if (err) return NextResponse.json(err, { status: err.status || 401 });
@@ -59,27 +57,44 @@ export async function POST(req) {
     const blockers = [];
     const warnings = [];
     const checks = {};
-    const shiftLength = lenForShift(shift);
+
+    let currentShift = shift;
+    try {
+      const shiftRefresh = await refreshStoredShiftVectorLengths({ sb, shift, updateDb: true, ignoreStoredShiftId: true, allowNameFallback: true, forceStandardBucketFallback: true });
+      if (shiftRefresh?.shift) currentShift = shiftRefresh.shift;
+      checks.shiftLengthRefresh = shiftRefresh;
+      if (shiftRefresh?.refreshed?.some((x) => x.prefix === "poster")) {
+        warnings.push("Refreshed posted shift length from live Vector before calculating projected hours.");
+      }
+      if (shiftRefresh?.skipped?.some((x) => x.prefix === "poster" && Array.isArray(x.candidates) && x.candidates.length) && !shiftRefresh?.refreshed?.some((x) => x.prefix === "poster")) {
+        blockers.push("This posted shift needs a manual Vector match before approval. Use Refresh open shift hours in LC view and pick the exact current Vector shift.");
+      }
+    } catch (refreshErr) {
+      checks.shiftLengthRefresh = { success: false, error: refreshErr.message || "Could not refresh shift length from Vector." };
+      warnings.push("Could not refresh posted shift length from live Vector; using stored length.");
+    }
+
+    const shiftLength = shiftLengthForCurrentHours(currentShift);
 
     if (!shiftLength) blockers.push("This shift is missing a Vector/LC shift length.");
 
-    if (shift.vector_source === "lc_override") {
+    if (currentShift.vector_source === "lc_override") {
       warnings.push("LC-created open shift: no poster Vector shift is attached.");
       checks.poster = { skipped: true, reason: "lc_override" };
-    } else if (shift.poster_vector_shift_id && shift.poster_vector_user_id) {
-      const posterCheck = await validatePersonDate({ email: shift.poster_email, name: shift.poster_name, date: shift.date, publicStrictEmail: true });
-      const stillOwns = posterCheck.shifts?.some(s => String(s.shift_id) === String(shift.poster_vector_shift_id) && Number(s.user_id) === Number(shift.poster_vector_user_id));
-      checks.poster = { ok: stillOwns, expected_shift_id: shift.poster_vector_shift_id, current: posterCheck };
+    } else if (currentShift.poster_vector_shift_id && currentShift.poster_vector_user_id) {
+      const posterCheck = await validatePersonDate({ email: currentShift.poster_email, name: currentShift.poster_name, date: currentShift.date, publicStrictEmail: true });
+      const stillOwns = posterCheck.shifts?.some(s => String(s.shift_id) === String(currentShift.poster_vector_shift_id) && Number(s.user_id) === Number(currentShift.poster_vector_user_id));
+      checks.poster = { ok: stillOwns, expected_shift_id: currentShift.poster_vector_shift_id, current: posterCheck };
       if (!stillOwns) blockers.push("Poster is no longer assigned to the exact stored Vector shift.");
     } else {
       blockers.push("This shift does not have an exact poster Vector shift attached.");
     }
 
-    if (shift.is_swap && String(app.applicant_email).toLowerCase() === String(shift.swap_partner_email || "").toLowerCase()) {
-      if (shift.swap_partner_vector_shift_id && shift.swap_partner_vector_user_id) {
-        const swapCheck = await validatePersonDate({ email: shift.swap_partner_email, name: shift.swap_partner_name, date: shift.swap_partner_date, publicStrictEmail: true });
-        const stillOwnsSwap = swapCheck.shifts?.some(s => String(s.shift_id) === String(shift.swap_partner_vector_shift_id) && Number(s.user_id) === Number(shift.swap_partner_vector_user_id));
-        checks.swapPartner = { ok: stillOwnsSwap, expected_shift_id: shift.swap_partner_vector_shift_id, current: swapCheck };
+    if (currentShift.is_swap && String(app.applicant_email).toLowerCase() === String(currentShift.swap_partner_email || "").toLowerCase()) {
+      if (currentShift.swap_partner_vector_shift_id && currentShift.swap_partner_vector_user_id) {
+        const swapCheck = await validatePersonDate({ email: currentShift.swap_partner_email, name: currentShift.swap_partner_name, date: currentShift.swap_partner_date, publicStrictEmail: true });
+        const stillOwnsSwap = swapCheck.shifts?.some(s => String(s.shift_id) === String(currentShift.swap_partner_vector_shift_id) && Number(s.user_id) === Number(currentShift.swap_partner_vector_user_id));
+        checks.swapPartner = { ok: stillOwnsSwap, expected_shift_id: currentShift.swap_partner_vector_shift_id, current: swapCheck };
         if (!stillOwnsSwap) blockers.push("Swap partner is no longer assigned to the exact stored Vector swap shift.");
       } else {
         blockers.push("Swap partner exact Vector shift is missing.");
@@ -87,11 +102,11 @@ export async function POST(req) {
     }
 
     if (shiftLength) {
-      const swapApplication = buildSwapApplicationContext(shift, app.applicant_email);
+      const swapApplication = buildSwapApplicationContext(currentShift, app.applicant_email);
       const eligibility = await checkApplicationEligibility({
         email: app.applicant_email,
         name: app.applicant_name,
-        shiftDate: shift.date,
+        shiftDate: currentShift.date,
         postedShiftLength: shiftLength,
         publicStrictEmail: true,
         swapApplication,
