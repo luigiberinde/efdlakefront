@@ -1688,13 +1688,6 @@ export default function ShiftBoard() {
           });
           return <>
             {renderDateFilter()}
-            <div style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#111827" }}>Vector shift hours</div>
-                <div style={{ fontSize: 11, color: "#8a92a0", marginTop: 2 }}>One-time cleanup: refresh currently open posted shift lengths from live Vector.</div>
-              </div>
-              <button type="button" onClick={refreshOpenShiftHoursFromVector} disabled={refreshShiftHoursLoading} style={{ ...btn2, opacity: refreshShiftHoursLoading ? 0.6 : 1 }}>{refreshShiftHoursLoading ? "Refreshing..." : "Refresh open shift hours"}</button>
-            </div>
             {manualMatchItems.length > 0 && (
               <div style={{ marginBottom: 16, border: "0.5px solid #D9B451", background: "#FFF9E8", borderRadius: 14, padding: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 900, color: "#8A5A00", marginBottom: 6 }}>Needs manual Vector match</div>
