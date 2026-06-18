@@ -54,6 +54,20 @@ function vectorShiftLabel(s) {
   return bits.join(" · ") || `Vector shift ${s.shift_id}`;
 }
 function arr(v) { return Array.isArray(v) ? v : []; }
+function vectorEarlyLate(s) {
+  const text = [s?.assignment_name, s?.work_type_name, ...(Array.isArray(s?.group_labels) ? s.group_labels : [])]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const hasEarly = /\bearly\b/.test(text);
+  const hasLate = /\blate\b/.test(text);
+  if (hasEarly && !hasLate) return "early";
+  if (hasLate && !hasEarly) return "late";
+  return null;
+}
+function onCallPreviewBucket(preview) {
+  return arr(preview?.scheduledShifts).map(vectorEarlyLate).filter(Boolean)[0] || null;
+}
 
 // ── Styles ──────────────────────────────────────────────────
 const F={width:"100%",padding:"8px 12px",fontSize:16,borderRadius:12,border:"0.5px solid #c7ccd4",background:"#fff",color:"#172033",boxSizing:"border-box"};
@@ -279,6 +293,209 @@ function dateInRange(date, start, end) {
   return String(date) >= String(start) && String(date) <= String(end);
 }
 
+function fmtPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (digits.length === 10) return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
+  return value || "";
+}
+function normalizeTimeToken(raw, ampm = "") {
+  if (!raw) return "";
+  const m = String(raw).trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return String(raw).slice(0,5);
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const marker = String(ampm || "").toLowerCase();
+  if (marker.startsWith("p") && h < 12) h += 12;
+  if (marker.startsWith("a") && h === 12) h = 0;
+  if (!Number.isFinite(h) || !Number.isFinite(min)) return String(raw).slice(0,5);
+  return `${String(h).padStart(2,"0")}:${String(min).padStart(2,"0")}`;
+}
+function timeFromOnCallNote(note, kind = "start") {
+  const text = String(note || "");
+  const patterns = kind === "end"
+    ? [/stay(?:ing)?\s+(?:later\s+)?(?:until|till|to)\s+(\d{1,2}:\d{2})\s*([ap]m)?/i, /until\s+(\d{1,2}:\d{2})\s*([ap]m)?/i]
+    : [/come\s+in\s+(?:early|earlier)?\s*(?:at|by)?\s+(\d{1,2}:\d{2})\s*([ap]m)?/i, /come\s+in\s+at\s+(\d{1,2}:\d{2})\s*([ap]m)?/i, /at\s+(\d{1,2}:\d{2})\s*([ap]m)?/i];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) return normalizeTimeToken(m[1], m[2]);
+  }
+  return "";
+}
+function onCallStartForApp(app) {
+  return app?.on_call_custom_start || timeFromOnCallNote(app?.on_call_note, "start") || "";
+}
+function onCallEndForApp(app) {
+  return app?.on_call_custom_end || timeFromOnCallNote(app?.on_call_note, "end") || "";
+}
+function onCallAvailabilityLabel(row) {
+  const t = row?.availability_type;
+  if (t === "early") return "Early only";
+  if (t === "late") return "Late only";
+  if (t === "both") return "All-Day";
+  if (t === "custom") return `Custom ${fmtTimeInput(row.custom_start) || "?"}–${fmtTimeInput(row.custom_end) || "?"}`;
+  if (t === "extra_availability") {
+    const x = row?.extra_availability_type;
+    if (x === "come_in_earlier") return `Come in earlier before Late at ${fmtTimeInput(row.custom_start) || "time missing"}`;
+    if (x === "stay_after_early") return `Stay later after Early until ${fmtTimeInput(row.custom_end || row.custom_start) || "time missing"}`;
+    if (x === "all_day_if_approved") return "All-Day / double if approved";
+    if (x === "custom") return `Custom extra ${fmtTimeInput(row.custom_start) || "?"}–${fmtTimeInput(row.custom_end) || "?"}`;
+    return "Extra availability";
+  }
+  return "On-Call";
+}
+function fmtTimeInput(t) {
+  if (!t) return "";
+  const raw = String(t).slice(0,5);
+  const [h, m] = raw.split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return raw;
+  const suffix = h >= 12 ? "PM" : "AM";
+  const hour = ((h + 11) % 12) + 1;
+  return `${hour}:${String(m).padStart(2,"0")} ${suffix}`;
+}
+function onCallTimeWindowLabel(row) {
+  if (!row) return "";
+  const x = row.extra_availability_type;
+  if (row.availability_type === "extra_availability" && x === "come_in_earlier") return `come in at ${fmtTimeInput(row.custom_start) || "time missing"} before Late`;
+  if (row.availability_type === "extra_availability" && x === "stay_after_early") return `stay until ${fmtTimeInput(row.custom_end || row.custom_start) || "time missing"} after Early`;
+  if (row.custom_start && row.custom_end) return `${fmtTimeInput(row.custom_start)}–${fmtTimeInput(row.custom_end)}`;
+  if (row.availability_type === "early") return "standard Early window";
+  if (row.availability_type === "late") return "standard Late window";
+  if (row.availability_type === "both") return "All-Day window";
+  return "time window not specified";
+}
+function onCallApprovalLabel(app) {
+  if (!app?.on_call_signup_id) return "";
+  const t = app.on_call_resolution_type;
+  if (t === "all_day_if_approved") return "All-Day if approved";
+  if (t === "come_in_earlier") {
+    const time = fmtTimeInput(onCallStartForApp(app));
+    return time ? `Come in earlier before Late at ${time}` : "Come in earlier before Late, but the time is missing. Check the On-Call record before approval.";
+  }
+  if (t === "stay_after_early") {
+    const time = fmtTimeInput(onCallEndForApp(app) || onCallStartForApp(app));
+    return time ? `Stay later after Early until ${time}` : "Stay later after Early, but the time is missing. Check the On-Call record before approval.";
+  }
+  return "On-Call extra availability";
+}
+function numberOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function fmtHours(v) {
+  const n = numberOrNull(v);
+  return n == null ? "—" : `${Math.round(n * 100) / 100} hrs`;
+}
+function onCallCurrentWeekHours(row) {
+  return numberOrNull(row?.current_week_hours_last_checked) ?? numberOrNull(row?.current_week_hours_at_signup);
+}
+function onCallProjectedHours(row) {
+  return numberOrNull(row?.projected_hours_if_used_last_checked) ?? numberOrNull(row?.projected_hours_if_used);
+}
+function onCallWouldBeOT(row) {
+  if (row?.would_be_ot_last_checked !== null && row?.would_be_ot_last_checked !== undefined) return Boolean(row.would_be_ot_last_checked);
+  return Boolean(row?.would_be_ot);
+}
+function onCallHoursFreshnessLabel(row) {
+  if (row?.current_hours_checked_at) return `checked ${timeAgo(row.current_hours_checked_at)}`;
+  return "at signup";
+}
+function onCallHoursCheckProblem(row) {
+  return row?.current_hours_check_status === "error" && row?.current_hours_check_error ? row.current_hours_check_error : null;
+}
+function onCallBaseShiftHours(shift) {
+  return numberOrNull(shift?.poster_vector_shift_length) ?? numberOrNull(shift?.lc_override_shift_length) ?? 0;
+}
+function onCallTotalApprovedHours(app, shift) {
+  if (!app?.on_call_signup_id) return null;
+  const base = onCallBaseShiftHours(shift);
+  const extra = numberOrNull(app.on_call_estimated_hours) ?? 0;
+  if (app.on_call_resolution_type === "all_day_if_approved") return 12.5;
+  if (["come_in_earlier", "stay_after_early"].includes(app.on_call_resolution_type)) {
+    const total = base + extra;
+    return total > 0 ? Math.round(total * 100) / 100 : null;
+  }
+  return extra > 0 ? extra : null;
+}
+function onCallProjectedHoursForApplication(app, shift) {
+  const total = onCallTotalApprovedHours(app, shift);
+  const current = numberOrNull(app?.applicant_vector_current_week_hours) ?? numberOrNull(app?.applicant_vector_week_hours);
+  if (total != null && current != null) return Math.round((current + total) * 100) / 100;
+  return numberOrNull(app?.on_call_projected_hours_if_used);
+}
+function onCallApplicationBreakdown(app, shift) {
+  const base = onCallBaseShiftHours(shift);
+  const extra = numberOrNull(app?.on_call_estimated_hours);
+  const total = onCallTotalApprovedHours(app, shift);
+  const current = numberOrNull(app?.applicant_vector_current_week_hours) ?? numberOrNull(app?.applicant_vector_week_hours);
+  const projected = onCallProjectedHoursForApplication(app, shift);
+  return { base, extra, total, current, projected, wouldBeOT: projected != null ? projected > 40 : !!app?.on_call_would_be_ot };
+}
+function onCallApplicationSummary(app, shift) {
+  const b = onCallApplicationBreakdown(app, shift);
+  const parts = [
+    onCallApprovalLabel(app),
+    `normal shift: ${fmtHours(b.base)}`,
+    b.extra != null ? `extra On-Call: ${fmtHours(b.extra)}` : null,
+    b.total != null ? `total if approved this way: ${fmtHours(b.total)}` : null,
+    b.projected != null ? `projected Vector week: ${fmtHours(b.projected)}` : null,
+    app?.on_call_phone ? `phone ${fmtPhone(app.on_call_phone)}` : null,
+    b.wouldBeOT ? "OT warning" : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+function onCallPendingSummary(row) {
+  const p = row?.pending_application;
+  if (!p) return null;
+  const parts = [
+    p.shift_label || "Posted shift",
+    p.base_shift_hours != null ? `normal shift: ${fmtHours(p.base_shift_hours)}` : null,
+    p.on_call_extra_hours != null ? `extra On-Call: ${fmtHours(p.on_call_extra_hours)}` : null,
+    p.total_hours_if_approved_with_on_call != null ? `total if approved this way: ${fmtHours(p.total_hours_if_approved_with_on_call)}` : null,
+    p.projected_vector_hours_if_approved_with_on_call != null ? `projected Vector week: ${fmtHours(p.projected_vector_hours_if_approved_with_on_call)}` : null,
+    p.would_be_ot_if_approved_with_on_call ? "OT warning" : null,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+function onCallEmailInstructionPreviewForApplication(app, shift, mode, customStart, customEnd, instructions) {
+  const name = canonicalAppName(app);
+  const day = shift?.date ? fmtDate(shift.date) : "the selected date";
+  const label = shift ? `${shift.time || ""} ${shift.type || "shift"}`.trim() : "shift";
+  if (mode === "lc_custom") {
+    const bits = [];
+    if (customStart) bits.push(`come in at ${fmtTimeInput(customStart)}`);
+    if (customEnd) bits.push(`stay until ${fmtTimeInput(customEnd)}`);
+    const detail = bits.length ? `Custom approved details: ${bits.join("; ")}.` : "Custom approved details: follow the LC instructions below.";
+    return `Hello ${name},\n\nYou have been approved for the ${label} on ${day}.\n\n${detail}\n${instructions || "Follow LC instructions and Vector once it is updated."}\n\nPlease give the LCs some time to update this in Vector. Vector remains the final source for the official schedule.\n\nBest,\nLCs`;
+  }
+  if (mode === "use_on_call") {
+    return `Hello ${name},\n\nYou have been approved for the ${label} on ${day}.\n\nImportant On-Call approval details: ${onCallApprovalLabel(app)}.\n\nPlease give the LCs some time to update this in Vector. Vector remains the final source for the official schedule.\n\nBest,\nLCs`;
+  }
+  return `Hello ${name},\n\nYou have been approved for the ${label} on ${day}.\n\nThis shift is now your responsibility.\n\nPlease give the LCs some time to update this in Vector. Vector remains the final source for the official schedule.\n\nBest,\nLCs`;
+}
+function onCallEmailPreview(row, mode, customStart, customEnd, instructions) {
+  const name = row?.vector_full_name || row?.name_entered || "there";
+  const day = row?.date ? fmtDate(row.date) : "the selected date";
+  const base = mode === "lc_custom"
+    ? `Hello ${name},\n\nYou have been approved from On-Call for ${day}. ${customStart ? `Please come in at ${fmtTimeInput(customStart)}. ` : ""}${customEnd ? `Please stay until ${fmtTimeInput(customEnd)}. ` : ""}${instructions || "Follow LC instructions and Vector once it is updated."}\n\nPlease give the LCs some time to update this in Vector. Vector remains the final source for the official schedule.\n\nBest,\nLCs`
+    : `Hello ${name},\n\nYou have been approved from On-Call for ${day}. Approved availability: ${onCallAvailabilityLabel(row)}${onCallTimeWindowLabel(row) ? ` (${onCallTimeWindowLabel(row)})` : ""}.\n\nPlease give the LCs some time to update this in Vector. Vector remains the final source for the official schedule.\n\nBest,\nLCs`;
+  return base;
+}
+function groupByDate(rows) {
+  return (rows || []).reduce((acc, row) => {
+    const key = row.date || "No date";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(row);
+    return acc;
+  }, {});
+}
+function rolePreferenceLabel(v) {
+  if (v === "either") return "Either role";
+  if (v === "manager") return "Manager";
+  return "Guard";
+}
+
+
 export default function ShiftBoard() {
   const sb = getSupabase();
 
@@ -336,6 +553,37 @@ export default function ShiftBoard() {
   const [nfEmailOk, setNfEmailOk] = useState(false);
   const [nfErr, setNfErr] = useState("");
   const [notifyLoading, setNotifyLoading] = useState(false);
+
+  // On-Call availability
+  const emptyOnCallForm = { name: "", email: "", phone: "", date: chicagoTodayStr(), rolePreference: "guard", availabilityType: "early", customStart: "", customEnd: "", extraAvailabilityType: "come_in_earlier", note: "" };
+  const [showOnCallModal, setShowOnCallModal] = useState(false);
+  const [oc, setOc] = useState(emptyOnCallForm);
+  const [ocEmailOk, setOcEmailOk] = useState(false);
+  const [ocPreview, setOcPreview] = useState(null);
+  const [ocErr, setOcErr] = useState("");
+  const [ocLoading, setOcLoading] = useState(false);
+  const [onCallRows, setOnCallRows] = useState([]);
+  const [onCallListLoading, setOnCallListLoading] = useState(false);
+  const [onCallApplyPrompt, setOnCallApplyPrompt] = useState(null);
+  const [onCallResolveChoice, setOnCallResolveChoice] = useState("remove");
+  const [onCallResolveExtraType, setOnCallResolveExtraType] = useState("all_day_if_approved");
+  const [onCallResolveCustomStart, setOnCallResolveCustomStart] = useState("");
+  const [onCallResolveCustomEnd, setOnCallResolveCustomEnd] = useState("");
+  const [onCallResolveNote, setOnCallResolveNote] = useState("");
+  const [onCallLcBusyId, setOnCallLcBusyId] = useState(null);
+  const [onCallHoursBusyId, setOnCallHoursBusyId] = useState(null);
+  const [onCallTodoRows, setOnCallTodoRows] = useState([]);
+  const [approveOnCallPrompt, setApproveOnCallPrompt] = useState(null);
+  const [approveOnCallMode, setApproveOnCallMode] = useState("use_on_call");
+  const [approveOnCallCustomStart, setApproveOnCallCustomStart] = useState("");
+  const [approveOnCallCustomEnd, setApproveOnCallCustomEnd] = useState("");
+  const [approveOnCallInstructions, setApproveOnCallInstructions] = useState("");
+  const [approveOnCallBusy, setApproveOnCallBusy] = useState(false);
+  const [onCallTodoBusyId, setOnCallTodoBusyId] = useState(null);
+  const [approvalOnCallMode, setApprovalOnCallMode] = useState("normal");
+  const [approvalOnCallCustomStart, setApprovalOnCallCustomStart] = useState("");
+  const [approvalOnCallCustomEnd, setApprovalOnCallCustomEnd] = useState("");
+  const [approvalOnCallInstructions, setApprovalOnCallInstructions] = useState("");
 
   const newBulkRow = () => ({ tempId: `${Date.now()}-${Math.random().toString(16).slice(2)}`, type: "guard", time: "early", date: "", note: "", selectedVectorShiftId: "" });
   const [showBulkPostModal, setShowBulkPostModal] = useState(false);
@@ -481,11 +729,41 @@ export default function ShiftBoard() {
     const ids = visibleShifts.map(s => s.id);
     if (ids.length > 0) {
       const { data: appData } = await sb.from("applications").select("*").in("shift_id", ids).order("applied_at");
-      setApps(appData || []);
+      let hydratedAppData = appData || [];
+      const onCallIds = [...new Set(hydratedAppData.map(a => a.on_call_signup_id).filter(Boolean))];
+      if (onCallIds.length > 0) {
+        const { data: onCallHydrateRows } = await sb
+          .from("on_call_signups")
+          .select("id, extra_availability_type, custom_start, custom_end, estimated_hours, phone, note, projected_hours_if_used, would_be_ot, status")
+          .in("id", onCallIds);
+        const onCallById = new Map((onCallHydrateRows || []).map(o => [String(o.id), o]));
+        const shiftById = new Map(visibleShifts.map(s => [String(s.id), s]));
+        hydratedAppData = hydratedAppData.map(a => {
+          const oc = onCallById.get(String(a.on_call_signup_id || ""));
+          if (!oc) return a;
+          const merged = {
+            ...a,
+            on_call_resolution_type: a.on_call_resolution_type || oc.extra_availability_type || null,
+            on_call_custom_start: a.on_call_custom_start || oc.custom_start || null,
+            on_call_custom_end: a.on_call_custom_end || oc.custom_end || null,
+            on_call_estimated_hours: a.on_call_estimated_hours ?? oc.estimated_hours ?? null,
+            on_call_note: a.on_call_note || oc.note || null,
+            on_call_phone: a.on_call_phone || oc.phone || null,
+          };
+          const shift = shiftById.get(String(a.shift_id));
+          const projected = onCallProjectedHoursForApplication(merged, shift);
+          return {
+            ...merged,
+            on_call_projected_hours_if_used: projected ?? a.on_call_projected_hours_if_used ?? oc.projected_hours_if_used ?? null,
+            on_call_would_be_ot: projected != null ? projected > 40 : (a.on_call_would_be_ot ?? oc.would_be_ot ?? false),
+          };
+        });
+      }
+      setApps(hydratedAppData);
 
       // For LC review: fetch cross-shift stats for unique applicant emails
       if (view === "manager" && lcTab === "review" && lcAuth) {
-        const pendingEmails = [...new Set((appData||[]).filter(a=>a.status==="pending").map(a=>a.applicant_email))];
+        const pendingEmails = [...new Set((hydratedAppData||[]).filter(a=>a.status==="pending").map(a=>a.applicant_email))];
         if (pendingEmails.length > 0) {
           const { data: crossApps } = await sb
             .from("applications")
@@ -515,13 +793,42 @@ export default function ShiftBoard() {
     setTodoCount(tc || 0);
   }, [sb]);
 
+  const fetchOnCallList = useCallback(async () => {
+    if (!(view === "manager" && lcAuth && lcTab === "oncall")) return;
+    setOnCallListLoading(true);
+    try {
+      const qs = dateFilter ? `?date=${encodeURIComponent(dateFilter)}` : "";
+      const res = await fetch(`/api/on-call/list${qs}`);
+      const data = await res.json().catch(() => ({ success: false, error: "Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not load On-Call list."); setOnCallRows([]); return; }
+      setOnCallRows(data.signups || []);
+    } finally { setOnCallListLoading(false); }
+  }, [view, lcAuth, lcTab, dateFilter]);
+
+  const fetchOnCallTodoRows = useCallback(async () => {
+    if (!(view === "manager" && lcAuth && lcTab === "todo")) return;
+    try {
+      const qs = new URLSearchParams();
+      qs.set("todo", todoTab === "done" ? "done" : "pending");
+      if (dateFilter) qs.set("date", dateFilter);
+      const res = await fetch(`/api/on-call/list?${qs.toString()}`);
+      const data = await res.json().catch(() => ({ success: false, error: "Server returned an invalid response." }));
+      if (!res.ok || !data.success) { setOnCallTodoRows([]); return; }
+      setOnCallTodoRows(data.signups || []);
+    } catch {
+      setOnCallTodoRows([]);
+    }
+  }, [view, lcAuth, lcTab, todoTab, dateFilter]);
+
   // Run fetch on mount and dependency changes
   useEffect(() => { fetchData(); fetchCounts(); }, [fetchData, fetchCounts]);
+  useEffect(() => { fetchOnCallList(); }, [fetchOnCallList]);
+  useEffect(() => { fetchOnCallTodoRows(); }, [fetchOnCallTodoRows]);
 
   // Store refetch for real-time
   useEffect(() => {
     refetchRef.current = async () => {
-      await Promise.all([fetchData(), fetchCounts()]);
+      await Promise.all([fetchData(), fetchCounts(), fetchOnCallTodoRows()]);
     };
   });
 
@@ -533,9 +840,10 @@ export default function ShiftBoard() {
     const channel = sb.channel("lss-rt")
       .on("postgres_changes", { event: "*", schema: "public", table: "shifts" }, () => refetchRef.current?.())
       .on("postgres_changes", { event: "*", schema: "public", table: "applications" }, () => refetchRef.current?.())
+      .on("postgres_changes", { event: "*", schema: "public", table: "on_call_signups" }, () => { refetchRef.current?.(); fetchOnCallList(); })
       .subscribe();
     return () => { sb.removeChannel(channel); };
-  }, [sb]);
+  }, [sb, fetchOnCallList, fetchOnCallTodoRows]);
 
   // Refetch on window focus
   useEffect(() => {
@@ -913,6 +1221,59 @@ export default function ShiftBoard() {
     } finally { setMultiLoading(false); }
   };
 
+  // ── On-Call signup ──────────────────────────────────
+  const openOnCallModal = () => {
+    const id = loadIdentity();
+    setOc({ ...emptyOnCallForm, name: id.name || "", email: id.email || "", date: chicagoTodayStr() });
+    setOcEmailOk(false); setOcPreview(null); setOcErr(""); setShowOnCallModal(true);
+  };
+
+  const checkOnCall = async () => {
+    const email = normEmail(oc.email);
+    if (!oc.name.trim() || !email || !oc.phone.trim() || !oc.date) { setOcErr("Enter your name, email, phone number, and date."); return; }
+    if (!ocEmailOk) { setOcErr("Confirm that this is your correct email."); return; }
+    setOcLoading(true); setOcErr(""); setOcPreview(null);
+    try {
+      const res = await fetch("/api/on-call", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...oc, email, dryRun: true }) });
+      const data = await res.json().catch(() => ({ success: false, error: "Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        if (data.code === "ALREADY_SCHEDULED_ON_CALL") {
+          setOcPreview({ alreadyScheduled: true, scheduledShifts: data.scheduledShifts || [], needsExtraAvailability: true });
+          setOc(o => ({ ...o, availabilityType: "extra_availability", extraAvailabilityType: "all_day_if_approved" }));
+          setOcErr("Vector shows you are already working that date. You can still submit extra availability: come in earlier before a Late, stay later after an Early, All-Day/double if approved, or custom hours.");
+          return;
+        }
+        if (data.code === "DUPLICATE_ON_CALL" || data.code === "ON_CALL_ALREADY_APPROVED") {
+          setOcErr(data.error || "You already have an On-Call record for that date.");
+          return;
+        }
+        setOcErr(data.error || "Could not check On-Call availability."); return;
+      }
+      setOcPreview(data.preview);
+    } finally { setOcLoading(false); }
+  };
+
+  const submitOnCall = async () => {
+    const email = normEmail(oc.email);
+    if (!ocPreview) { await checkOnCall(); return; }
+    setOcLoading(true); setOcErr("");
+    try {
+      const res = await fetch("/api/on-call", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...oc, email, dryRun: false }) });
+      const data = await res.json().catch(() => ({ success: false, error: "Server returned an invalid response." }));
+      if (!res.ok || !data.success) {
+        if (data.code === "ALREADY_SCHEDULED_ON_CALL") {
+          setOcPreview({ alreadyScheduled: true, scheduledShifts: data.scheduledShifts || [], needsExtraAvailability: true });
+          setOc(o => ({ ...o, availabilityType: "extra_availability", extraAvailabilityType: "all_day_if_approved" }));
+        }
+        setOcErr(data.error || "Could not save On-Call signup."); return;
+      }
+      saveIdentity(oc.name, email);
+      setShowOnCallModal(false);
+      showToast("On-Call signup saved");
+      await Promise.all([lookupMine(email), fetchOnCallList()]);
+    } finally { setOcLoading(false); }
+  };
+
   // ── Notify me + bulk posting ─────────────────────────
   const submitNotify = async () => {
     const e = normEmail(nf.email);
@@ -1013,7 +1374,7 @@ export default function ShiftBoard() {
       const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ ...pendingApply, dryRun: false }) });
       const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
       if (!res.ok || !data.success) {
-        if (handleApplyBlockedResponse(data, pendingApply.email)) { setPendingApply(null); return; }
+        if (handleApplyBlockedResponse(data, pendingApply.email, { ...pendingApply, dryRun: true })) { setPendingApply(null); return; }
         showToast(data.error || "Error submitting application.");
         setPendingApply(null);
         return;
@@ -1027,7 +1388,23 @@ export default function ShiftBoard() {
     }
   };
 
-  const handleApplyBlockedResponse = (data, fallbackEmail = aEmail.trim().toLowerCase()) => {
+  const handleApplyBlockedResponse = (data, fallbackEmail = aEmail.trim().toLowerCase(), pendingPayload = null) => {
+    if (data?.code === "ON_CALL_CONFLICT") {
+      setOnCallApplyPrompt({
+        email: fallbackEmail,
+        message: data.error || "Resolve your On-Call status before applying.",
+        onCallSignups: data.onCallSignups || [],
+        shift: data.shift,
+        pendingPayload,
+      });
+      setOnCallResolveChoice("remove");
+      setOnCallResolveExtraType("all_day_if_approved");
+      setOnCallResolveCustomStart("");
+      setOnCallResolveCustomEnd("");
+      setOnCallResolveNote("");
+      setAErr("");
+      return true;
+    }
     if (data?.code === "SELF_APPLICATION" && data.canDeleteShift) {
       setApplyActionPrompt({
         kind: "self_shift",
@@ -1052,6 +1429,34 @@ export default function ShiftBoard() {
       return true;
     }
     return false;
+  };
+
+  const resolveOnCallBeforeApply = async () => {
+    if (!onCallApplyPrompt?.email || !onCallApplyPrompt?.pendingPayload) return;
+    setActionLoading(true);
+    try {
+      const ids = (onCallApplyPrompt.onCallSignups || []).map(x => x.id).filter(Boolean);
+      const body = onCallResolveChoice === "remove"
+        ? { ids, email: onCallApplyPrompt.email, action: "remove", note: onCallResolveNote }
+        : { ids, email: onCallApplyPrompt.email, action: onCallResolveChoice, customStart: onCallResolveCustomStart, customEnd: onCallResolveCustomEnd, note: onCallResolveNote, shift: onCallApplyPrompt.shift };
+      const res = await fetch("/api/on-call/resolve-before-apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not update On-Call status."); return; }
+
+      const retryRes = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(onCallApplyPrompt.pendingPayload) });
+      const retryData = await retryRes.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!retryRes.ok || !retryData.success) {
+        if (handleApplyBlockedResponse(retryData, onCallApplyPrompt.email, onCallApplyPrompt.pendingPayload)) return;
+        showToast(retryData.error || "Could not review application after updating On-Call.");
+        return;
+      }
+      setOnCallApplyPrompt(null);
+      setPendingApply({ ...onCallApplyPrompt.pendingPayload, vectorReviews: retryData.reviews || [] });
+      await Promise.all([lookupMine(onCallApplyPrompt.email), fetchOnCallList()]);
+      showToast(onCallResolveChoice === "remove" ? "On-Call removed. Review your application." : "On-Call changed for this application. Review your application.");
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const deleteOwnShiftFromPrompt = async () => {
@@ -1196,6 +1601,10 @@ export default function ShiftBoard() {
   const openApprovalModal = async (shiftId, appId) => {
     setPendingApproval({ shiftId, appId });
     setApprovalPreflight(null);
+    setApprovalOnCallMode("normal");
+    setApprovalOnCallCustomStart("");
+    setApprovalOnCallCustomEnd("");
+    setApprovalOnCallInstructions("");
     setApprovalPreflightLoading(true);
     try {
       const res = await fetch("/api/vector/approval-preflight", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId, appId }) });
@@ -1213,7 +1622,16 @@ export default function ShiftBoard() {
     if (!pendingApproval) return;
     setActionLoading(true);
     try {
-      const res = await fetch("/api/approve", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftId: pendingApproval.shiftId, appId: pendingApproval.appId }) });
+      const res = await fetch("/api/approve", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({
+        shiftId: pendingApproval.shiftId,
+        appId: pendingApproval.appId,
+        onCallApproval: {
+          mode: approvalOnCallMode,
+          customStart: approvalOnCallCustomStart,
+          customEnd: approvalOnCallCustomEnd,
+          instructions: approvalOnCallInstructions,
+        },
+      }) });
       const data = await res.json().catch(() => ({ success: false, error: "Server returned an invalid response." }));
       if (!res.ok || !data.success) {
         console.error("approval failed", res.status, data);
@@ -1297,7 +1715,7 @@ export default function ShiftBoard() {
     try {
       // Be forgiving here: older rows may have emails with different capitalization or stray spaces.
       // Pull a bounded recent set and match normalized emails client-side so My Activity does not look empty for real users.
-      const [postsRes, appsRes, watchesRes] = await Promise.all([
+      const [postsRes, appsRes, watchesRes, onCallRes] = await Promise.all([
         sb.from("shifts")
           .select("*")
           .order("date", { ascending: false })
@@ -1311,11 +1729,13 @@ export default function ShiftBoard() {
           .eq("status", "active")
           .order("created_at", { ascending: false })
           .limit(500),
+        fetch("/api/on-call/my-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: e }) }).then(r => r.json()),
       ]);
 
       if (postsRes.error) throw postsRes.error;
       if (appsRes.error) throw appsRes.error;
       if (watchesRes.error) throw watchesRes.error;
+      if (!onCallRes.success) throw new Error(onCallRes.error || "Could not load On-Call signups.");
 
       const posts = (postsRes.data || [])
         .filter(s => emailMatches(s.poster_email, e))
@@ -1327,12 +1747,12 @@ export default function ShiftBoard() {
         .filter(w => emailMatches(w.email, e))
         .slice(0, 30);
 
-      setMine({ email: e, posts, apps, watches });
+      setMine({ email: e, posts, apps, watches, onCalls: onCallRes.signups || [] });
       saveIdentity(loadIdentity().name, e);
     } catch (err) {
       console.error("My activity lookup error", err);
       showToast("Could not load My activity. Try again or ask an LC.");
-      setMine({ email: e, posts: [], apps: [], watches: [] });
+      setMine({ email: e, posts: [], apps: [], watches: [], onCalls: [] });
     } finally {
       setMineLoading(false);
     }
@@ -1381,6 +1801,102 @@ export default function ShiftBoard() {
       if (!res.ok || !data.success) { showToast(data.error || "Could not unsubscribe from this notification."); return; }
       showToast("Notification turned off");
       await lookupMine(mine.email);
+    } finally {
+      setMineBusyId(null);
+    }
+  };
+
+  const lcRemoveOnCall = async (onCallId, label = "this On-Call signup") => {
+    const ok = typeof window === "undefined" ? true : window.confirm(`Remove ${label} from the LC On-Call list?`);
+    if (!ok) return;
+    setOnCallLcBusyId(onCallId);
+    try {
+      const res = await fetch("/api/on-call/lc-remove", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id: onCallId }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not remove On-Call signup."); return; }
+      showToast("On-Call signup removed");
+      await fetchOnCallList();
+    } finally {
+      setOnCallLcBusyId(null);
+    }
+  };
+
+  const refreshOnCallCurrentHours = async (row) => {
+    if (!row?.id) return;
+    setOnCallHoursBusyId(row.id);
+    try {
+      const res = await fetch("/api/on-call/refresh-hours", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id: row.id }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not refresh On-Call hours."); return; }
+      if (data.signup) {
+        setOnCallRows(prev => prev.map(x => String(x.id) === String(data.signup.id) ? { ...x, ...data.signup, pending_application: x.pending_application || data.signup.pending_application } : x));
+        setApproveOnCallPrompt(prev => prev && String(prev.id) === String(data.signup.id) ? { ...prev, ...data.signup } : prev);
+      }
+      showToast(`Hours refreshed: ${data.currentWeekHours} current · ${data.projectedHours} if used${data.wouldBeOT ? " · OT" : ""}`);
+    } finally {
+      setOnCallHoursBusyId(null);
+    }
+  };
+
+
+
+  const openApproveOnCall = (row) => {
+    setApproveOnCallPrompt(row);
+    setApproveOnCallMode("use_on_call");
+    setApproveOnCallCustomStart(row.custom_start || "");
+    setApproveOnCallCustomEnd(row.custom_end || "");
+    setApproveOnCallInstructions("");
+  };
+
+  const confirmApproveOnCall = async () => {
+    if (!approveOnCallPrompt?.id) return;
+    setApproveOnCallBusy(true);
+    try {
+      const res = await fetch("/api/on-call/approve", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({
+          id: approveOnCallPrompt.id,
+          mode: approveOnCallMode,
+          customStart: approveOnCallCustomStart,
+          customEnd: approveOnCallCustomEnd,
+          instructions: approveOnCallInstructions,
+        }),
+      });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not approve this On-Call signup."); return; }
+      showToast(data.emailStatus === "not_configured" ? "On-Call approved. Email not configured." : "On-Call approved and emailed.");
+      setApproveOnCallPrompt(null);
+      await Promise.all([fetchOnCallList(), fetchOnCallTodoRows(), fetchCounts()]);
+    } finally {
+      setApproveOnCallBusy(false);
+    }
+  };
+
+  const markOnCallTodoDone = async (id) => {
+    setOnCallTodoBusyId(id);
+    try {
+      const res = await fetch("/api/on-call/mark-done", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not mark On-Call todo done."); return; }
+      showToast("On-Call Vector update marked done");
+      await Promise.all([fetchOnCallTodoRows(), fetchOnCallList(), fetchCounts()]);
+    } finally {
+      setOnCallTodoBusyId(null);
+    }
+  };
+
+  const mineRemoveOnCall = async (onCallId) => {
+    if (!mine?.email) return;
+    const ok = typeof window === "undefined" ? true : window.confirm("Remove this On-Call signup? LCs will no longer see you as available for that date.");
+    if (!ok) return;
+    setMineBusyId(`oncall-${onCallId}`);
+    try {
+      const res = await fetch("/api/on-call/remove", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ id: onCallId, email: mine.email }) });
+      const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
+      if (!res.ok || !data.success) { showToast(data.error || "Could not remove this On-Call signup."); return; }
+      showToast("On-Call signup removed");
+      await Promise.all([lookupMine(mine.email), fetchOnCallList()]);
     } finally {
       setMineBusyId(null);
     }
@@ -1519,6 +2035,11 @@ export default function ShiftBoard() {
                     {liveHours && !liveHours.success && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Current Vector hours check failed: {liveHours.error || "Unknown error"}</span>}
                     {arr(app.applicant_vector_warnings).length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A1F1F", marginTop: 4 }}>Vector warning: {arr(app.applicant_vector_warnings).join("; ")}</span>}
                     {app.applicant_note && <span style={{ width: "100%", fontSize: 11, color: "#5e6675", marginTop: 4 }}>Applicant note: {app.applicant_note}</span>}
+                    {app.on_call_signup_id && <div style={{ width: "100%", marginTop: 8, border: "0.5px solid #9BB7D4", background: "#F6FAFF", borderRadius: 12, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 12, fontWeight: 800, color: "#0C447C", marginBottom: 4 }}>On-Call change tied to this application</div>
+                      <div style={{ fontSize: 12, color: "#172033", lineHeight: 1.45 }}>{onCallApplicationSummary(app, shift)}</div>
+                      {app.on_call_note && <div style={{ fontSize: 11, color: "#5e6675", marginTop: 4 }}>Note: {app.on_call_note}</div>}
+                    </div>}
                     {st.priorApprovals.length > 0 && <span style={{ width: "100%", fontSize: 11, color: "#8A5A00", marginTop: 4 }}>Already approved for {st.priorApprovals.length} shift{st.priorApprovals.length===1?"":"s"} this week: {st.priorApprovals.map(p => `${fmtDate(p.date)} ${p.type} ${p.time} (${p.hours} hrs reported)`).join("; ")}.</span>}
                   </div>
                   <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -1543,17 +2064,25 @@ export default function ShiftBoard() {
     );
   };
 
-  const TodoRow = ({ shift, done = false }) => (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: 18, border: "0.5px solid #e0e3e8", background: "#fff", marginBottom: 8, opacity: done ? 0.6 : 1 }}>
+  const TodoRow = ({ shift, done = false }) => {
+    const approvedApp = (apps || []).find(a => String(a.shift_id) === String(shift.id) && a.status === "approved");
+    const hasOnCallCustom = approvedApp?.on_call_signup_id && (approvedApp.on_call_approval_mode === "use_on_call" || approvedApp.on_call_approval_mode === "lc_custom");
+    return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: 18, border: "0.5px solid #e0e3e8", background: "#fff", marginBottom: 8, opacity: done ? 0.6 : 1 }}>
       <div style={{ flex: 1 }}>
         <div style={{ display: "flex", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
           <span style={B(tc(shift.type).bg, tc(shift.type).text)}>{shift.type}</span>
           <span style={B("#f6f7f9","#5e6675")}>{shift.time}</span>
           {shift.is_swap && <span style={B("#E6F1FB","#0C447C")}>swap</span>}
+          {hasOnCallCustom && <span style={B("#F6FAFF", "#0C447C")}>Update custom On-Call hours</span>}
           {done && <span style={B("#EAF3DE","#27500A")}>done</span>}
         </div>
         <div style={{ fontSize: 14, fontWeight: 700 }}>{fmtDate(shift.date)}</div>
         <div style={{ fontSize: 13, color: "#5e6675" }}>{canonicalPosterName(shift)} → {shift.approved_vector_full_name || shift.taken_by_name}</div>
+        {hasOnCallCustom && <InfoBlock badge="On-Call approval" gold>
+          {approvedApp.on_call_approval_mode === "lc_custom"
+            ? <>LC custom instructions: {approvedApp.on_call_lc_custom_start ? `come in ${fmtTimeInput(approvedApp.on_call_lc_custom_start)}. ` : ""}{approvedApp.on_call_lc_custom_end ? `leave/stay until ${fmtTimeInput(approvedApp.on_call_lc_custom_end)}. ` : ""}{approvedApp.on_call_lc_instructions || "Update Vector using the custom details sent in the approval email."}</>
+            : <>{onCallApprovalLabel(approvedApp)}. Update Vector to reflect these On-Call approval details, not just the normal posted shift if different.</>}
+        </InfoBlock>}
         {shift.is_swap && shift.taken_by_email === shift.swap_partner_email && (
           <div style={{ fontSize: 12, color: "#5e6675", marginTop: 4, lineHeight: 1.6 }}>
             <b>{canonicalPosterName(shift)}</b> gives up {shortVectorShiftLabel(shift, "poster")} ({fmtDate(shift.date)})<br/>
@@ -1565,6 +2094,26 @@ export default function ShiftBoard() {
         )}
       </div>
       {!done && <button onClick={() => markDone(shift.id)} style={btn2}>Mark done</button>}
+    </div>;
+  };
+
+  const OnCallTodoRow = ({ row, done = false }) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", borderRadius: 18, border: "0.5px solid #9BB7D4", background: "#F6FAFF", marginBottom: 8, opacity: done ? 0.6 : 1 }}>
+      <div style={{ flex: 1 }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
+          <span style={B("#E6F1FB", "#0C447C")}>On-Call</span>
+          <span style={B("#EAF3DE", "#27500A")}>{onCallAvailabilityLabel(row)}</span>
+          {row.would_be_ot && <span style={B("#FCEBEB", "#8A1F1F")}>OT warning</span>}
+          {done && <span style={B("#EAF3DE", "#27500A")}>done</span>}
+        </div>
+        <div style={{ fontSize: 14, fontWeight: 700 }}>{fmtDate(row.date)} · {row.vector_full_name || row.name_entered}</div>
+        <div style={{ fontSize: 13, color: "#5e6675" }}>{row.email} · {fmtPhone(row.phone)}</div>
+        <InfoBlock badge="On-Call Vector update" gold>
+          Approved from On-Call. Update Vector manually using: <b>{row.on_call_approval_mode === "lc_custom" ? "LC custom details" : onCallAvailabilityLabel(row)}</b>{" "}
+          {row.on_call_approval_mode === "lc_custom" ? `${row.on_call_lc_custom_start ? `come in ${fmtTimeInput(row.on_call_lc_custom_start)}. ` : ""}${row.on_call_lc_custom_end ? `leave/stay until ${fmtTimeInput(row.on_call_lc_custom_end)}. ` : ""}${row.on_call_lc_instructions || "See approval email details."}` : onCallTimeWindowLabel(row)}
+        </InfoBlock>
+      </div>
+      {!done && <button disabled={onCallTodoBusyId === row.id} onClick={() => markOnCallTodoDone(row.id)} style={btn2}>{onCallTodoBusyId === row.id ? "Saving..." : "Mark done"}</button>}
     </div>
   );
 
@@ -1637,6 +2186,7 @@ export default function ShiftBoard() {
         <div style={{ flex: 1 }} />
         <button onClick={openMineModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>My activity</button>
         <button onClick={openNotifyModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>Notify me</button>
+        <button onClick={openOnCallModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>On-Call</button>
         <button onClick={openPostModal} style={{ ...btnP, margin: "6px 0" }}>Post a shift</button>
       </nav>
 
@@ -1676,7 +2226,8 @@ export default function ShiftBoard() {
       {view === "manager" && lcAuth && <>
         <div style={{ display: "flex", borderBottom: "0.5px solid #e0e3e8", marginBottom: 20 }}>
           <button style={tabS(lcTab==="review")} onClick={() => setLcTab("review")}>Open shift review</button>
-          <button style={tabS(lcTab==="todo")} onClick={() => setLcTab("todo")}>To-do ({todoCount})</button>
+          <button style={tabS(lcTab==="oncall")} onClick={() => setLcTab("oncall")}>On-Call ({onCallRows.length})</button>
+          <button style={tabS(lcTab==="todo")} onClick={() => setLcTab("todo")}>To-do ({todoCount + onCallTodoRows.length})</button>
           <button style={tabS(lcTab==="history")} onClick={() => setLcTab("history")}>History</button>
         </div>
 
@@ -1723,15 +2274,70 @@ export default function ShiftBoard() {
           </>;
         })()}
 
+        {lcTab === "oncall" && <>
+          <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>People who signed up to be On-Call. This does not schedule them in Vector; it gives LCs a clean call list with hours and OT warnings.</p>
+          {renderDateFilter()}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: "#8a92a0" }}>{onCallListLoading ? "Loading On-Call..." : `${onCallRows.length} active On-Call signup${onCallRows.length === 1 ? "" : "s"}${dateFilter ? " on this date" : ""}`}</span>
+            <button onClick={fetchOnCallList} style={btn2}>Refresh On-Call</button>
+          </div>
+          {onCallRows.length === 0 ? <Empty>No active/used On-Call signups{dateFilter ? " for this date" : " yet"}.</Empty> : Object.entries(groupByDate(onCallRows)).map(([date, rows]) => (
+            <div key={date} style={{ marginBottom: 18 }}>
+              <div style={{ position: "sticky", top: 0, zIndex: 1, background: "#F7F1E6", border: "0.5px solid #E5D3B7", borderRadius: 12, padding: "8px 12px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <b style={{ color: "#172033" }}>{fmtDate(date)}</b>
+                <span style={{ fontSize: 12, color: "#5e6675" }}>{rows.length} On-Call entr{rows.length === 1 ? "y" : "ies"}</span>
+              </div>
+              {rows.map(row => (
+                <div key={row.id} style={{ background: "#fff", borderRadius: 16, border: `0.5px solid ${row.status === "used" ? "#9BB7D4" : onCallWouldBeOT(row) ? "#D6A4A4" : "#e0e3e8"}`, borderLeft: `4px solid ${row.status === "used" ? "#0C447C" : row.already_scheduled ? "#D9B451" : onCallWouldBeOT(row) ? "#A32D2D" : "#1D9E75"}`, padding: "1rem 1.25rem", marginBottom: 10, boxShadow: "0 8px 24px rgba(15,23,42,0.04)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontWeight: 900, fontSize: 15 }}>{row.vector_full_name || row.name_entered}</div>
+                      <div style={{ fontSize: 12, color: "#5e6675", marginTop: 2 }}>{fmtDate(row.date)} · {onCallAvailabilityLabel(row)} · {rolePreferenceLabel(row.role_preference)}</div>
+                      <div style={{ fontSize: 12, color: "#5e6675", marginTop: 2 }}>{row.email} · {fmtPhone(row.phone)}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {row.status === "used" && <span style={B("#E6F1FB", "#0C447C")}>approved/used</span>}
+                      {row.already_scheduled && <span style={B("#FFF2B8", "#8A5A00")}>already working</span>}
+                      {onCallWouldBeOT(row) && <span style={B("#FCEBEB", "#8A1F1F")}>OT warning</span>}
+                      <span style={B("#EAF3DE", "#27500A")}>{Number(row.estimated_hours || 0)} hrs if used</span>
+                      {row.current_hours_checked_at && <span style={B("#E6F1FB", "#0C447C")}>hours refreshed</span>}
+                      {row.status === "active" && <button disabled={onCallLcBusyId === row.id} onClick={() => openApproveOnCall(row)} style={{ ...btnP, padding: "4px 10px", fontSize: 12, background: "#1D9E75" }}>Approve On-Call</button>}
+                      {row.status === "active" && <button disabled={onCallHoursBusyId === row.id} title="Refresh this person's current Vector hours and projected hours if used" onClick={() => refreshOnCallCurrentHours(row)} style={{ ...btn2, padding: "2px 8px", fontSize: 12, opacity: onCallHoursBusyId === row.id ? 0.55 : 1 }}>{onCallHoursBusyId === row.id ? "…" : "↻"}</button>}
+                      {row.status === "active" && <button disabled={onCallLcBusyId === row.id} title="Remove from LC On-Call list" onClick={() => lcRemoveOnCall(row.id, `${row.vector_full_name || row.name_entered} on ${fmtDate(row.date)}`)} style={{ ...btn2, padding: "2px 8px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: onCallLcBusyId === row.id ? 0.55 : 1 }}>×</button>}
+                    </div>
+                  </div>
+                  {row.already_scheduled && <InfoBlock badge="already working" gold>{row.scheduled_shift_label || "Vector shows this person is already scheduled that day."}</InfoBlock>}
+                  {onCallHoursCheckProblem(row) && <InfoBlock badge="hours refresh issue" gold>{onCallHoursCheckProblem(row)}</InfoBlock>}
+                  {row.pending_application && <InfoBlock badge="pending shift application">This On-Call entry was changed because this person applied for a specific shift. Use the same hour totals here and in Open Shift Review.</InfoBlock>}
+                  <SummaryBox rows={[
+                    ["Availability", onCallAvailabilityLabel(row)],
+                    ["Window", onCallTimeWindowLabel(row)],
+                    row.already_scheduled ? ["Their assigned Vector shift", row.scheduled_shift_label || "Already scheduled in Vector"] : null,
+                    ["Current Vector week", onCallCurrentWeekHours(row) != null ? `${fmtHours(onCallCurrentWeekHours(row))} · ${onCallHoursFreshnessLabel(row)}` : "—"],
+                    ["On-Call hours alone", row.estimated_hours != null ? fmtHours(row.estimated_hours) : "—"],
+                    ["Projected if used as On-Call", onCallProjectedHours(row) != null ? `${fmtHours(onCallProjectedHours(row))}${onCallWouldBeOT(row) ? " · OT warning" : ""}` : "—"],
+                    row.pending_application ? ["If pending shift approved", onCallPendingSummary(row)] : null,
+                    ["Status", row.status === "used" ? "Approved/used. Listed here for LC reference." : row.pending_application ? "Active, tied to a pending shift application" : "Active"],
+                    ["Note", row.note || "None"],
+                  ].filter(Boolean)} />
+                </div>
+              ))}
+            </div>
+          ))}
+        </>}
+
         {lcTab === "todo" && <>
           <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px" }}>Update these in Vector manually, then mark as done.</p>
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <button style={pillS(todoTab==="pending")} onClick={() => setTodoTab("pending")}>Needs update ({todoCount})</button>
+            <button style={pillS(todoTab==="pending")} onClick={() => setTodoTab("pending")}>Needs update ({todoCount + onCallTodoRows.length})</button>
             <button style={pillS(todoTab==="done")} onClick={() => setTodoTab("done")}>Completed</button>
           </div>
           {renderDateFilter()}{renderPagination()}
-          {shifts.length === 0 ? <Empty>{todoTab==="pending"?"All caught up — nothing is waiting on a Vector update.":"Nothing completed yet. Items you mark done will show up here."}</Empty>
-            : shifts.map(s => <TodoRow key={s.id} shift={s} done={todoTab==="done"} />)}
+          {shifts.length === 0 && onCallTodoRows.length === 0 ? <Empty>{todoTab==="pending"?"All caught up — nothing is waiting on a Vector update.":"Nothing completed yet. Items you mark done will show up here."}</Empty>
+            : <>
+                {shifts.map(s => <TodoRow key={s.id} shift={s} done={todoTab==="done"} />)}
+                {onCallTodoRows.map(row => <OnCallTodoRow key={`oncall-${row.id}`} row={row} done={todoTab==="done"} />)}
+              </>}
           {renderPagination()}
         </>}
 
@@ -1748,6 +2354,49 @@ export default function ShiftBoard() {
         </>}
       </>}
 
+
+      {/* ── ON-CALL MODAL ─────────────────────────────── */}
+      {showOnCallModal && <Modal onClose={() => setShowOnCallModal(false)} z={118}>
+        <h2 style={{ fontSize: 18, margin: "0 0 4px" }}>On-Call</h2>
+        <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>Sign up as available if LCs need extra coverage. This does not schedule you in Vector and does not guarantee you will be used.</p>
+        <LabeledInput label="Your name" value={oc.name} onChange={v => { setOc(o=>({...o,name:v})); setOcPreview(null); }} placeholder="Albert Einstein" />
+        <LabeledInput label="Your email" type="email" value={oc.email} onChange={v => { setOc(o=>({...o,email:v})); setOcEmailOk(false); setOcPreview(null); }} placeholder="aeinstein@cityofevanston.org" />
+        <CheckBox checked={ocEmailOk} onChange={v => { setOcEmailOk(v); setOcPreview(null); }}>I confirm this is my correct email.</CheckBox>
+        <LabeledInput label="Phone number" hint="so LCs can contact you quickly" value={oc.phone} onChange={v => setOc(o=>({...o,phone:v}))} placeholder="847-555-0123" />
+        <LabeledInput label="Date" type="date" value={oc.date} onChange={v => { setOc(o=>({...o,date:v})); setOcPreview(null); }} />
+        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Role</label><select style={F} value={oc.rolePreference} onChange={e => setOc(o=>({...o,rolePreference:e.target.value}))}><option value="guard">Guard</option><option value="manager">Manager</option><option value="either">Either</option></select></div>
+          <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Availability</label><select style={F} value={oc.availabilityType} onChange={e => { setOc(o=>({...o,availabilityType:e.target.value})); setOcPreview(null); }}><option value="early">Early only</option><option value="late">Late only</option><option value="both">All-Day</option><option value="custom">Custom hours</option><option value="extra_availability">I am already working / extra availability</option></select></div>
+        </div>
+        {oc.availabilityType === "custom" && <div style={{ display: "flex", gap: 12 }}><LabeledInput label="Can start" type="time" value={oc.customStart} onChange={v => setOc(o=>({...o,customStart:v}))} /><LabeledInput label="Must leave" type="time" value={oc.customEnd} onChange={v => setOc(o=>({...o,customEnd:v}))} /></div>}
+        {oc.availabilityType === "extra_availability" && <>
+          <InfoBlock badge="already working" gold>Use this if Vector already has you scheduled that day. Vector will determine whether you are Early or Late: Late shifts can offer to come in earlier; Early shifts can offer to stay later.</InfoBlock>
+          {ocPreview?.scheduledShifts?.length > 0 && <InfoBlock badge="Vector shift">Vector shows: {arr(ocPreview.scheduledShifts).map(vectorShiftLabel).join("; ")}</InfoBlock>}
+          <div style={{ marginBottom: 16 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Extra availability</label><select style={F} value={oc.extraAvailabilityType} onChange={e => setOc(o=>({...o,extraAvailabilityType:e.target.value, customStart:"", customEnd:""}))}><option value="all_day_if_approved">Can work All-Day / double if OT approved</option>{onCallPreviewBucket(ocPreview) === "late" && <option value="come_in_earlier">Can come in earlier before this Late shift</option>}{onCallPreviewBucket(ocPreview) === "early" && <option value="stay_after_early">Can stay later after this Early shift</option>}<option value="custom">Custom extra hours</option></select></div>
+          {oc.extraAvailabilityType === "come_in_earlier" && <div style={{ marginBottom: 16 }}><LabeledInput label="What time can you come in before your Late shift?" type="time" value={oc.customStart} onChange={v => setOc(o=>({...o,customStart:v}))} /></div>}
+          {oc.extraAvailabilityType === "stay_after_early" && <div style={{ marginBottom: 16 }}><LabeledInput label="What time can you stay until after your Early shift?" type="time" value={oc.customEnd} onChange={v => setOc(o=>({...o,customEnd:v}))} /></div>}
+          {oc.extraAvailabilityType === "custom" && <div style={{ display: "flex", gap: 12 }}><LabeledInput label="Can start" type="time" value={oc.customStart} onChange={v => setOc(o=>({...o,customStart:v}))} /><LabeledInput label="Must leave" type="time" value={oc.customEnd} onChange={v => setOc(o=>({...o,customEnd:v}))} /></div>}
+        </>}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Note for LCs, optional</label>
+          <textarea style={{ ...F, minHeight: 54, resize: "vertical" }} value={oc.note} onChange={e => setOc(o=>({...o,note:e.target.value}))} placeholder="Example: I can come fast if needed, but call/text first." />
+        </div>
+        {ocPreview?.alreadyScheduled && <WarningBox>Vector shows you are already scheduled on this date. Your On-Call signup will be shown to LCs as extra availability, not as fully free. {arr(ocPreview.scheduledShifts).map(vectorShiftLabel).join("; ")}</WarningBox>}
+        {ocPreview && <SummaryBox rows={[
+          ["Vector name", ocPreview.vectorUser?.full_name || oc.name],
+          ["Date", fmtDate(oc.date)],
+          ["On-Call hours", `${ocPreview.estimatedHours ?? "—"} hrs`],
+          ["Current week", `${ocPreview.currentWeekHours ?? "—"} hrs`],
+          ["Projected", `${ocPreview.projectedHours ?? "—"} hrs if used`],
+          ["OT", ocPreview.wouldBeOT ? "Would be OT — LCs must approve before using you." : "No OT warning"],
+        ]} />}
+        {ocErr && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>{ocErr}</p>}
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 }}>
+          <button onClick={() => setShowOnCallModal(false)} style={btn2}>Cancel</button>
+          <button disabled={ocLoading} onClick={checkOnCall} style={btn2}>{ocLoading ? "Checking..." : "Check with Vector"}</button>
+          <button disabled={ocLoading || !ocPreview} onClick={submitOnCall} style={{ ...btnP, opacity: !ocPreview ? 0.55 : 1 }}>{ocLoading ? "Saving..." : "Save On-Call"}</button>
+        </div>
+      </Modal>}
 
       {/* ── NOTIFY ME MODAL ───────────────────────────── */}
       {showNotifyModal && <Modal onClose={() => setShowNotifyModal(false)} z={118}>
@@ -2115,10 +2764,11 @@ export default function ShiftBoard() {
 
           setActionLoading(true);
           try {
-            const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ shiftIds: validIds, name: aName.trim(), email, note: aNote.trim(), dryRun: true }) });
+            const applyPayload = { shiftIds: validIds, name: aName.trim(), email, note: aNote.trim(), dryRun: true };
+            const res = await fetch("/api/apply-shift", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(applyPayload) });
             const data = await res.json().catch(() => ({ success:false, error:"Server returned an invalid response." }));
             if (!res.ok || !data.success) {
-              if (handleApplyBlockedResponse(data, email)) return;
+              if (handleApplyBlockedResponse(data, email, applyPayload)) return;
               setAErr(data.error || "Vector blocked this application.");
               return;
             }
@@ -2219,10 +2869,36 @@ export default function ShiftBoard() {
               <InfoBlock badge="Vector sync" gold>{approvalPreflight.syncDisabledReason || "Vector sync is not enabled yet."}</InfoBlock>
             </>}
           </div>
+          {app.on_call_signup_id && <div style={{ border: "0.5px solid #9BB7D4", background: "#F6FAFF", borderRadius: 14, padding: "12px", margin: "12px 0" }}>
+            <div style={{ fontSize: 13, fontWeight: 900, color: "#0C447C", marginBottom: 6 }}>This applicant changed an On-Call signup for this date</div>
+            <SummaryBox rows={[
+              ["On-Call plan", onCallApprovalLabel(app)],
+              ["Normal posted shift", `${fmtDate(shift.date)} · ${shift.time} ${shift.type} · ${fmtHours(onCallBaseShiftHours(shift))}`],
+              ["Extra On-Call hours", fmtHours(onCallApplicationBreakdown(app, shift).extra)],
+              ["Total if approved this way", fmtHours(onCallApplicationBreakdown(app, shift).total)],
+              ["Projected Vector week", `${fmtHours(onCallApplicationBreakdown(app, shift).projected)}${onCallApplicationBreakdown(app, shift).wouldBeOT ? " · OT warning" : ""}`],
+              ["Phone", app.on_call_phone ? fmtPhone(app.on_call_phone) : "—"],
+              ["On-Call note", app.on_call_note || "None"],
+            ]} />
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", margin: "8px 0 6px" }}>Approval email / instruction option</div>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 6 }}><input type="radio" checked={approvalOnCallMode === "normal"} onChange={() => setApprovalOnCallMode("normal")} /> Approve the posted shift normally only</label>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 6 }}><input type="radio" checked={approvalOnCallMode === "use_on_call"} onChange={() => setApprovalOnCallMode("use_on_call")} /> Approve with the applicant’s On-Call hours/details above</label>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}><input type="radio" checked={approvalOnCallMode === "lc_custom"} onChange={() => setApprovalOnCallMode("lc_custom")} /> LC custom time/instructions in the approval email</label>
+            {approvalOnCallMode === "lc_custom" && <>
+              <div style={{ display: "flex", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 160 }}><LabeledInput label="Custom start / come-in time" type="time" value={approvalOnCallCustomStart} onChange={setApprovalOnCallCustomStart} /></div>
+                <div style={{ flex: 1, minWidth: 160 }}><LabeledInput label="Custom end / leave time" type="time" value={approvalOnCallCustomEnd} onChange={setApprovalOnCallCustomEnd} /></div>
+              </div>
+              <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Custom instructions shown in the approval email</label>
+              <textarea style={{ ...F, minHeight: 74, resize: "vertical" }} value={approvalOnCallInstructions} onChange={e => setApprovalOnCallInstructions(e.target.value)} placeholder={`Example: You are approved for ${fmtDate(shift.date)}. Please come in at 10:00 AM and stay through the Late shift unless an LC tells you otherwise.`} />
+              <InfoBlock badge="email preview" gold><pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{onCallEmailInstructionPreviewForApplication(app, shift, approvalOnCallMode, approvalOnCallCustomStart, approvalOnCallCustomEnd, approvalOnCallInstructions)}</pre></InfoBlock>
+            </>}
+            {approvalOnCallMode === "use_on_call" && <InfoBlock badge="email preview" gold><pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{onCallEmailInstructionPreviewForApplication(app, shift, approvalOnCallMode, approvalOnCallCustomStart, approvalOnCallCustomEnd, approvalOnCallInstructions)}</pre></InfoBlock>}
+          </div>}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 }}>
             <button onClick={() => setPendingApproval(null)} style={btn2}>Cancel</button>
             <button disabled style={{ ...btnP, opacity: 0.45, background: "#1a2744" }} title="Vector sync writes are not enabled yet.">Approve + Vector sync (coming later)</button>
-            <button disabled={actionLoading || approvalPreflightLoading} onClick={confirmApproval} style={{ ...btnP, background: isOt ? "#8A1F1F" : "#1D9E75" }}>Approve (Shift Swap only)</button>
+            <button disabled={actionLoading || approvalPreflightLoading} onClick={confirmApproval} style={{ ...btnP, background: isOt ? "#8A1F1F" : "#1D9E75" }}>{app.on_call_signup_id && approvalOnCallMode === "use_on_call" ? "Approve with On-Call details" : app.on_call_signup_id && approvalOnCallMode === "lc_custom" ? "Approve with custom email details" : "Approve (Shift Swap only)"}</button>
           </div>
         </Modal>;
       })()}
@@ -2283,6 +2959,20 @@ export default function ShiftBoard() {
               <button disabled={mineBusyId === `watch-${w.id}`} onClick={() => mineUnsubscribeWatch(w.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `watch-${w.id}` ? 0.55 : 1 }}>{mineBusyId === `watch-${w.id}` ? "Turning off..." : "Unsubscribe"}</button>
             </div>
           ))}
+
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", margin: "16px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>On-Call signups</div>
+          {(!mine.onCalls || mine.onCalls.length === 0) && <Empty>No active On-Call signups under this email.</Empty>}
+          {(mine.onCalls || []).map(o => (
+            <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <b>{fmtDate(o.date)}</b>
+                <span style={B("#EAF3DE", "#27500A")}>{onCallAvailabilityLabel(o)}</span>
+                <span style={B("#f6f7f9", "#5e6675")}>{Number(o.estimated_hours || 0)} hrs</span>
+                {o.would_be_ot && <span style={B("#FCEBEB", "#8A1F1F")}>OT</span>}
+              </div>
+              <button disabled={mineBusyId === `oncall-${o.id}`} onClick={() => mineRemoveOnCall(o.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `oncall-${o.id}` ? 0.55 : 1 }}>{mineBusyId === `oncall-${o.id}` ? "Removing..." : "Remove"}</button>
+            </div>
+          ))}
         </>}
 
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
@@ -2299,6 +2989,71 @@ export default function ShiftBoard() {
           <button onClick={() => setApplyActionPrompt(null)} style={btn2}>Cancel</button>
           {applyActionPrompt.kind === "self_shift" && <button disabled={actionLoading} onClick={deleteOwnShiftFromPrompt} style={{ ...btnP, background: "#8A1F1F" }}>Delete my shift posting</button>}
           {applyActionPrompt.kind === "duplicate_application" && <button disabled={actionLoading} onClick={deleteApplicationFromPrompt} style={{ ...btnP, background: "#8A1F1F" }}>Delete my application</button>}
+        </div>
+      </Modal>}
+
+      {/* ── APPROVE ON-CALL DIRECTLY ─────────────────────── */}
+      {approveOnCallPrompt && <Modal onClose={() => setApproveOnCallPrompt(null)} z={157}>
+        <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#0C447C" }}>Approve On-Call</h2>
+        <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>This emails the person and marks this On-Call entry as approved/used. It still does not update Vector, because apparently we like keeping official scheduling changes intentional.</p>
+        <SummaryBox rows={[
+          ["Person", approveOnCallPrompt.vector_full_name || approveOnCallPrompt.name_entered],
+          ["Date", fmtDate(approveOnCallPrompt.date)],
+          ["Phone", fmtPhone(approveOnCallPrompt.phone)],
+          ["On-Call availability", onCallAvailabilityLabel(approveOnCallPrompt)],
+          ["Window", onCallTimeWindowLabel(approveOnCallPrompt)],
+          ["Projected", onCallProjectedHours(approveOnCallPrompt) != null ? `${fmtHours(onCallProjectedHours(approveOnCallPrompt))} if used${onCallWouldBeOT(approveOnCallPrompt) ? " · OT" : ""} · ${onCallHoursFreshnessLabel(approveOnCallPrompt)}` : "—"],
+        ]} />
+        <div style={{ border: "0.5px solid #9BB7D4", background: "#F6FAFF", borderRadius: 14, padding: 12, margin: "12px 0" }}>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 6 }}><input type="radio" checked={approveOnCallMode === "use_on_call"} onChange={() => setApproveOnCallMode("use_on_call")} /> Approve using the On-Call hours/details they submitted</label>
+          <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}><input type="radio" checked={approveOnCallMode === "lc_custom"} onChange={() => setApproveOnCallMode("lc_custom")} /> LC custom time/instructions in the approval email</label>
+          {approveOnCallMode === "lc_custom" && <>
+            <div style={{ display: "flex", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 160 }}><LabeledInput label="Custom come-in time, optional" type="time" value={approveOnCallCustomStart} onChange={setApproveOnCallCustomStart} /></div>
+              <div style={{ flex: 1, minWidth: 160 }}><LabeledInput label="Custom leave/stay-until time, optional" type="time" value={approveOnCallCustomEnd} onChange={setApproveOnCallCustomEnd} /></div>
+            </div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Custom instructions shown in the approval email</label>
+            <textarea style={{ ...F, minHeight: 74, resize: "vertical" }} value={approveOnCallInstructions} onChange={e => setApproveOnCallInstructions(e.target.value)} placeholder="Example: Please come in at 12:00 PM and plan to stay through close unless an LC tells you otherwise." />
+          </>}
+        </div>
+        <InfoBlock badge="email preview" gold><pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{onCallEmailPreview(approveOnCallPrompt, approveOnCallMode, approveOnCallCustomStart, approveOnCallCustomEnd, approveOnCallInstructions)}</pre></InfoBlock>
+        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", flexWrap: "wrap", marginTop: 16 }}>
+          <button onClick={() => setApproveOnCallPrompt(null)} style={btn2}>Cancel</button>
+          <button disabled={approveOnCallBusy} onClick={confirmApproveOnCall} style={{ ...btnP, background: "#1D9E75" }}>{approveOnCallBusy ? "Approving..." : "Approve On-Call + email"}</button>
+        </div>
+      </Modal>}
+
+      {/* ── ON-CALL CONFLICT BEFORE APPLY ───────────────── */}
+      {onCallApplyPrompt && <Modal onClose={() => setOnCallApplyPrompt(null)} z={156}>
+        <h2 style={{ fontSize: 18, margin: "0 0 8px", color: "#8A5A00" }}>You are already On-Call for this date</h2>
+        <p style={{ fontSize: 14, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>{onCallApplyPrompt.message}</p>
+        {onCallApplyPrompt.shift && <SummaryBox rows={[
+          ["Shift", `${fmtDate(onCallApplyPrompt.shift.date)} ${onCallApplyPrompt.shift.type} ${onCallApplyPrompt.shift.time}`],
+          ["Posted by", onCallApplyPrompt.shift.poster_name || "Unknown"],
+        ]} />}
+        <InfoBlock badge="required" gold>If you apply for this shift, you cannot stay broadly On-Call for the same date. Choose exactly what should happen: delete the On-Call signup, mark yourself All-Day if approved, or give LCs a specific come-in-before-Late or stay-after-Early time.</InfoBlock>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#5e6675", marginBottom: 4 }}>What should happen to your On-Call signup?</label>
+          <select style={F} value={onCallResolveChoice} onChange={e => { setOnCallResolveChoice(e.target.value); setOnCallResolveCustomStart(""); setOnCallResolveCustomEnd(""); }}>
+            <option value="remove">Delete my On-Call signup for this date</option>
+            <option value="all_day_if_approved">Mark me as All-Day if this shift is approved</option>
+            {String(onCallApplyPrompt.shift?.time || "").toLowerCase() === "late" && <option value="come_in_earlier">I can come in earlier before this Late shift</option>}
+            {String(onCallApplyPrompt.shift?.time || "").toLowerCase() === "early" && <option value="stay_after_early">I can stay later after this Early shift</option>}
+          </select>
+        </div>
+        {onCallResolveChoice === "come_in_earlier" && <div style={{ marginBottom: 16 }}>
+          <LabeledInput label="What time can you come in before this Late shift?" type="time" value={onCallResolveCustomStart} onChange={setOnCallResolveCustomStart} />
+        </div>}
+        {onCallResolveChoice === "stay_after_early" && <div style={{ marginBottom: 16 }}>
+          <LabeledInput label="What time can you stay until after this Early shift?" type="time" value={onCallResolveCustomEnd} onChange={setOnCallResolveCustomEnd} />
+        </div>}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Optional note for LCs</label>
+          <textarea style={{ ...F, minHeight: 54, resize: "vertical" }} value={onCallResolveNote} onChange={e => setOnCallResolveNote(e.target.value)} placeholder="Example: If I get this Early shift, I can stay later if needed." />
+        </div>
+        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", flexWrap: "wrap" }}>
+          <button onClick={() => setOnCallApplyPrompt(null)} style={btn2}>Cancel</button>
+          <button disabled={actionLoading} onClick={resolveOnCallBeforeApply} style={btnP}>{actionLoading ? "Updating..." : "Update On-Call and continue"}</button>
         </div>
       </Modal>}
 
