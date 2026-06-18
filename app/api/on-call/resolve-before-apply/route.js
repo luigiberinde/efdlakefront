@@ -1,0 +1,97 @@
+import { NextResponse } from "next/server";
+import { getServiceClient } from "@/lib/supabase-server";
+import { normalizeEmail } from "@/lib/vector-core";
+
+function clean(v) { return String(v || "").trim(); }
+function minutesFromTime(v) {
+  if (!v) return null;
+  const raw = String(v).includes("T") || String(v).includes(" ") ? new Date(String(v).replace(" ", "T")) : null;
+  if (raw && !Number.isNaN(raw.getTime())) return raw.getHours() * 60 + raw.getMinutes();
+  const [h, m] = String(v).slice(0,5).split(":").map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+function durationHours(start, end) {
+  const a = minutesFromTime(start);
+  const b = minutesFromTime(end);
+  if (a == null || b == null || b <= a) return 0;
+  return Math.round(((b - a) / 60) * 100) / 100;
+}
+function estimate(extraType, customStart, customEnd, shift) {
+  if (extraType === "all_day_if_approved") return 12.5;
+  if (extraType === "come_in_earlier") return durationHours(customStart, shift?.poster_vector_shift_start || shift?.shift_start);
+  if (extraType === "stay_after_early") return durationHours(shift?.poster_vector_shift_end || shift?.shift_end, customEnd || customStart);
+  return 0;
+}
+function label(extraType, customStart, customEnd) {
+  if (extraType === "all_day_if_approved") return "Applied for this shift and changed On-Call to All-Day if approved.";
+  if (extraType === "come_in_earlier") return `Applied for this Late shift and can come in early at ${customStart || "?"} if approved.`;
+  if (extraType === "stay_after_early") return `Applied for this Early shift and can stay later until ${customEnd || customStart || "?"} if approved.`;
+  return "Changed On-Call before applying for a specific shift.";
+}
+function inferShiftBucket(shift) {
+  const text = [
+    shift?.poster_vector_assignment_name,
+    shift?.poster_vector_work_type_name,
+    shift?.time,
+  ].filter(Boolean).join(" ").toLowerCase();
+  const hasEarly = /\bearly\b/.test(text);
+  const hasLate = /\blate\b/.test(text);
+  if (hasEarly && !hasLate) return "early";
+  if (hasLate && !hasEarly) return "late";
+  return String(shift?.time || "").toLowerCase();
+}
+
+export async function POST(req) {
+  try {
+    const body = await req.json();
+    const email = normalizeEmail(body.email);
+    const ids = Array.isArray(body.ids) ? body.ids : body.id ? [body.id] : [];
+    const action = body.action;
+    const shift = body.shift && typeof body.shift === "object" ? body.shift : null;
+    if (!email || ids.length === 0) return NextResponse.json({ success: false, error: "Missing On-Call signup or email." }, { status: 400 });
+    const sb = getServiceClient();
+    if (action === "remove") {
+      const { error } = await sb.from("on_call_signups").update({ status: "removed", removed_at: new Date().toISOString(), updated_at: new Date().toISOString(), note: clean(body.note) || "Removed before applying for a shift on this date." }).in("id", ids).eq("normalized_email", email).eq("status", "active");
+      if (error) throw error;
+      return NextResponse.json({ success: true, action: "remove" });
+    }
+
+    const extraType = ["all_day_if_approved", "come_in_earlier", "stay_after_early"].includes(action) ? action : null;
+    if (!extraType) return NextResponse.json({ success: false, error: "Choose a valid On-Call option before applying." }, { status: 400 });
+    const shiftBucket = inferShiftBucket(shift);
+    if (extraType === "come_in_earlier" && shiftBucket !== "late") {
+      return NextResponse.json({ success: false, error: "Come in earlier is only available when applying for a Late shift." }, { status: 400 });
+    }
+    if (extraType === "stay_after_early" && shiftBucket !== "early") {
+      return NextResponse.json({ success: false, error: "Stay later is only available when applying for an Early shift." }, { status: 400 });
+    }
+    const customStart = clean(body.customStart);
+    const customEnd = clean(body.customEnd);
+    if (extraType === "come_in_earlier" && !customStart) return NextResponse.json({ success: false, error: "Enter what time you can come in before the Late shift." }, { status: 400 });
+    if (extraType === "stay_after_early" && !(customEnd || customStart)) return NextResponse.json({ success: false, error: "Enter what time you can stay until after the Early shift." }, { status: 400 });
+
+    const { data: existingRows, error: existingErr } = await sb.from("on_call_signups").select("id, current_week_hours_at_signup").in("id", ids).eq("normalized_email", email).eq("status", "active");
+    if (existingErr) throw existingErr;
+    const hours = estimate(extraType, customStart, customEnd, shift);
+    if (!hours || hours <= 0) return NextResponse.json({ success: false, error: "Could not calculate the On-Call hours from that option/time. Make sure the posted shift has Vector start/end times." }, { status: 400 });
+    const current = existingRows?.[0]?.current_week_hours_at_signup != null ? Number(existingRows[0].current_week_hours_at_signup || 0) : null;
+    const note = clean(body.note);
+    const { error } = await sb.from("on_call_signups").update({
+      availability_type: "extra_availability",
+      extra_availability_type: extraType,
+      custom_start: extraType === "come_in_earlier" ? customStart : null,
+      custom_end: extraType === "stay_after_early" ? (customEnd || customStart) : null,
+      estimated_hours: hours,
+      projected_hours_if_used: current != null ? Math.round((current + hours) * 100) / 100 : null,
+      would_be_ot: current != null ? (current + hours) > 40 : false,
+      note: note ? `${label(extraType, customStart, customEnd)} Note: ${note}` : label(extraType, customStart, customEnd),
+      updated_at: new Date().toISOString(),
+    }).in("id", ids).eq("normalized_email", email).eq("status", "active");
+    if (error) throw error;
+    return NextResponse.json({ success: true, action: extraType, estimatedHours: hours });
+  } catch (err) {
+    console.error("on-call resolve before apply error", err);
+    return NextResponse.json({ success: false, error: err.message || "Could not update On-Call before applying." }, { status: 500 });
+  }
+}

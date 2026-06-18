@@ -1,0 +1,74 @@
+import { NextResponse } from "next/server";
+import { getServiceClient } from "@/lib/supabase-server";
+import { normalizeEmail } from "@/lib/vector-core";
+
+function clean(v) { return String(v || "").trim(); }
+function durationHours(start, end) {
+  if (!start || !end) return 0;
+  const a = new Date(`2000-01-01T${String(start).slice(0,5)}:00`);
+  const b = new Date(`2000-01-01T${String(end).slice(0,5)}:00`);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime()) || b <= a) return 0;
+  return Math.round(((b - a) / 36e5) * 100) / 100;
+}
+function inferFromLabel(label) {
+  const text = String(label || "").toLowerCase();
+  const early = /\bearly\b/.test(text);
+  const late = /\blate\b/.test(text);
+  if (early && !late) return "early";
+  if (late && !early) return "late";
+  return null;
+}
+function estimated(extraType, customStart, customEnd, existingRows = []) {
+  if (extraType === "custom") return durationHours(customStart, customEnd);
+  if (extraType === "stay_after_early") return 6.5;
+  if (extraType === "come_in_earlier") return 6;
+  if (extraType === "all_day_if_approved") {
+    const bucket = existingRows.map(r => inferFromLabel(r.scheduled_shift_label)).find(Boolean);
+    if (bucket === "early") return 6.5;
+    if (bucket === "late") return 6;
+    return 6.5;
+  }
+  return 0;
+}
+
+export async function POST(req) {
+  try {
+    const body = await req.json();
+    const email = normalizeEmail(body.email);
+    const ids = Array.isArray(body.ids) ? body.ids : body.id ? [body.id] : [];
+    const action = body.action;
+    if (!email || ids.length === 0) return NextResponse.json({ success: false, error: "Missing On-Call signup or email." }, { status: 400 });
+    const sb = getServiceClient();
+    if (action === "remove") {
+      const { error } = await sb.from("on_call_signups").update({ status: "removed", removed_at: new Date().toISOString(), updated_at: new Date().toISOString(), note: clean(body.note) || "Removed before applying for a shift on this date." }).in("id", ids).eq("normalized_email", email).eq("status", "active");
+      if (error) throw error;
+      return NextResponse.json({ success: true, action: "remove" });
+    }
+    if (action === "extra") {
+      const extraType = ["stay_after_early", "come_in_earlier", "all_day_if_approved", "custom"].includes(body.extraAvailabilityType) ? body.extraAvailabilityType : "all_day_if_approved";
+      const customStart = clean(body.customStart);
+      const customEnd = clean(body.customEnd);
+      const { data: existingRows, error: existingErr } = await sb.from("on_call_signups").select("id, scheduled_shift_label, current_week_hours_at_signup").in("id", ids).eq("normalized_email", email).eq("status", "active");
+      if (existingErr) throw existingErr;
+      const hours = estimated(extraType, customStart, customEnd, existingRows || []);
+      if (!hours || hours <= 0) return NextResponse.json({ success: false, error: "Choose an extra availability option or valid custom time range." }, { status: 400 });
+      const { error } = await sb.from("on_call_signups").update({
+        availability_type: "extra_availability",
+        extra_availability_type: extraType,
+        custom_start: extraType === "custom" ? customStart : null,
+        custom_end: extraType === "custom" ? customEnd : null,
+        estimated_hours: hours,
+        projected_hours_if_used: existingRows?.[0]?.current_week_hours_at_signup != null ? Number(existingRows[0].current_week_hours_at_signup || 0) + hours : null,
+        would_be_ot: existingRows?.[0]?.current_week_hours_at_signup != null ? (Number(existingRows[0].current_week_hours_at_signup || 0) + hours) > 40 : false,
+        note: clean(body.note) || "Changed to extra availability after applying for a specific shift.",
+        updated_at: new Date().toISOString(),
+      }).in("id", ids).eq("normalized_email", email).eq("status", "active");
+      if (error) throw error;
+      return NextResponse.json({ success: true, action: "extra" });
+    }
+    return NextResponse.json({ success: false, error: "Choose whether to remove or adjust On-Call." }, { status: 400 });
+  } catch (err) {
+    console.error("on-call resolve before apply error", err);
+    return NextResponse.json({ success: false, error: err.message || "Could not update On-Call before applying." }, { status: 500 });
+  }
+}

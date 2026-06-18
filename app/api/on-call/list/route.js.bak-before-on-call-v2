@@ -1,0 +1,21 @@
+import { NextResponse } from "next/server";
+import { requireLC } from "@/lib/auth";
+import { getServiceClient } from "@/lib/supabase-server";
+
+export async function GET(req) {
+  const authErr = await requireLC();
+  if (authErr) return NextResponse.json(authErr, { status: authErr.status || 401 });
+  try {
+    const url = new URL(req.url);
+    const date = url.searchParams.get("date");
+    const sb = getServiceClient();
+    let q = sb.from("on_call_signups").select("*").eq("status", "active").order("date", { ascending: true }).order("created_at", { ascending: true }).limit(250);
+    if (date) q = q.eq("date", date);
+    const { data, error } = await q;
+    if (error) throw error;
+    return NextResponse.json({ success: true, signups: data || [] });
+  } catch (err) {
+    console.error("on-call list error", err);
+    return NextResponse.json({ success: false, error: err.message || "Could not load On-Call signups." }, { status: 500 });
+  }
+}

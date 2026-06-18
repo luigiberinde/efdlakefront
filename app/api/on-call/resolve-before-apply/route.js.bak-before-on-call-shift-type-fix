@@ -1,0 +1,69 @@
+import { NextResponse } from "next/server";
+import { getServiceClient } from "@/lib/supabase-server";
+import { normalizeEmail } from "@/lib/vector-core";
+
+function clean(v) { return String(v || "").trim(); }
+function durationHours(start, end) {
+  if (!start || !end) return 0;
+  const a = new Date(`2000-01-01T${String(start).slice(0,5)}:00`);
+  const b = new Date(`2000-01-01T${String(end).slice(0,5)}:00`);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime()) || b <= a) return 0;
+  return Math.round(((b - a) / 36e5) * 100) / 100;
+}
+function estimate(extraType, customStart, customEnd) {
+  if (extraType === "all_day_if_approved") return 12.5;
+  if (["come_in_earlier", "stay_after_early"].includes(extraType)) return durationHours(customStart, customEnd);
+  return 0;
+}
+function label(extraType, customStart, customEnd) {
+  if (extraType === "all_day_if_approved") return "Applied for this shift and changed On-Call to All-Day if approved.";
+  if (extraType === "come_in_earlier") return `Applied for this shift and can come in earlier ${customStart || "?"}–${customEnd || "?"} if approved.`;
+  if (extraType === "stay_after_early") return `Applied for this shift and can stay later ${customStart || "?"}–${customEnd || "?"} if approved.`;
+  return "Changed On-Call before applying for a specific shift.";
+}
+
+export async function POST(req) {
+  try {
+    const body = await req.json();
+    const email = normalizeEmail(body.email);
+    const ids = Array.isArray(body.ids) ? body.ids : body.id ? [body.id] : [];
+    const action = body.action;
+    if (!email || ids.length === 0) return NextResponse.json({ success: false, error: "Missing On-Call signup or email." }, { status: 400 });
+    const sb = getServiceClient();
+    if (action === "remove") {
+      const { error } = await sb.from("on_call_signups").update({ status: "removed", removed_at: new Date().toISOString(), updated_at: new Date().toISOString(), note: clean(body.note) || "Removed before applying for a shift on this date." }).in("id", ids).eq("normalized_email", email).eq("status", "active");
+      if (error) throw error;
+      return NextResponse.json({ success: true, action: "remove" });
+    }
+
+    const extraType = ["all_day_if_approved", "come_in_earlier", "stay_after_early"].includes(action) ? action : null;
+    if (!extraType) return NextResponse.json({ success: false, error: "Choose a valid On-Call option before applying." }, { status: 400 });
+    const customStart = clean(body.customStart);
+    const customEnd = clean(body.customEnd);
+    if (["come_in_earlier", "stay_after_early"].includes(extraType) && (!customStart || !customEnd)) {
+      return NextResponse.json({ success: false, error: "Enter the exact time window you can work." }, { status: 400 });
+    }
+    const { data: existingRows, error: existingErr } = await sb.from("on_call_signups").select("id, current_week_hours_at_signup").in("id", ids).eq("normalized_email", email).eq("status", "active");
+    if (existingErr) throw existingErr;
+    const hours = estimate(extraType, customStart, customEnd);
+    if (!hours || hours <= 0) return NextResponse.json({ success: false, error: "Could not calculate the On-Call hours from that option/time range." }, { status: 400 });
+    const current = existingRows?.[0]?.current_week_hours_at_signup != null ? Number(existingRows[0].current_week_hours_at_signup || 0) : null;
+    const note = clean(body.note);
+    const { error } = await sb.from("on_call_signups").update({
+      availability_type: "extra_availability",
+      extra_availability_type: extraType,
+      custom_start: ["come_in_earlier", "stay_after_early"].includes(extraType) ? customStart : null,
+      custom_end: ["come_in_earlier", "stay_after_early"].includes(extraType) ? customEnd : null,
+      estimated_hours: hours,
+      projected_hours_if_used: current != null ? Math.round((current + hours) * 100) / 100 : null,
+      would_be_ot: current != null ? (current + hours) > 40 : false,
+      note: note ? `${label(extraType, customStart, customEnd)} Note: ${note}` : label(extraType, customStart, customEnd),
+      updated_at: new Date().toISOString(),
+    }).in("id", ids).eq("normalized_email", email).eq("status", "active");
+    if (error) throw error;
+    return NextResponse.json({ success: true, action: extraType, estimatedHours: hours });
+  } catch (err) {
+    console.error("on-call resolve before apply error", err);
+    return NextResponse.json({ success: false, error: err.message || "Could not update On-Call before applying." }, { status: 500 });
+  }
+}

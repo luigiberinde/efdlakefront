@@ -1,0 +1,41 @@
+import { NextResponse } from "next/server";
+import { requireLC } from "@/lib/auth";
+import { getServiceClient } from "@/lib/supabase-server";
+
+function chicagoTodayStr() {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+  const get = type => parts.find(p => p.type === type)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+export async function GET(req) {
+  const authErr = await requireLC();
+  if (authErr) return NextResponse.json(authErr, { status: authErr.status || 401 });
+  try {
+    const url = new URL(req.url);
+    const date = url.searchParams.get("date");
+    const today = chicagoTodayStr();
+    const sb = getServiceClient();
+
+    await sb.from("on_call_signups")
+      .update({ status: "expired", updated_at: new Date().toISOString() })
+      .eq("status", "active")
+      .lt("date", today);
+
+    let q = sb.from("on_call_signups")
+      .select("*")
+      .in("status", ["active", "used"])
+      .order("date", { ascending: true })
+      .order("status", { ascending: true })
+      .order("created_at", { ascending: true })
+      .limit(500);
+    if (date) q = q.eq("date", date);
+    else q = q.gte("date", today);
+    const { data, error } = await q;
+    if (error) throw error;
+    return NextResponse.json({ success: true, signups: data || [], today });
+  } catch (err) {
+    console.error("on-call list error", err);
+    return NextResponse.json({ success: false, error: err.message || "Could not load On-Call signups." }, { status: 500 });
+  }
+}

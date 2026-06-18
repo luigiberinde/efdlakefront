@@ -1,0 +1,18 @@
+import { NextResponse } from "next/server";
+import { getServiceClient } from "@/lib/supabase-server";
+import { normalizeEmail } from "@/lib/vector-core";
+
+export async function POST(req) {
+  try {
+    const { email } = await req.json();
+    const normalized = normalizeEmail(email);
+    if (!normalized) return NextResponse.json({ success: false, error: "Missing email." }, { status: 400 });
+    const sb = getServiceClient();
+    const { data, error } = await sb.from("on_call_signups").select("*").eq("normalized_email", normalized).eq("status", "active").order("date", { ascending: true }).limit(100);
+    if (error) throw error;
+    return NextResponse.json({ success: true, signups: data || [] });
+  } catch (err) {
+    console.error("on-call my activity error", err);
+    return NextResponse.json({ success: false, error: err.message || "Could not load On-Call signups." }, { status: 500 });
+  }
+}
