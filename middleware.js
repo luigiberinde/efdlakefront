@@ -45,8 +45,10 @@ export async function middleware(request) {
   const guardSession = await verifyJwtCookie(guardCookie);
   const lcSession = await verifyJwtCookie(lcCookie);
 
-  // LC session also counts as guard access.
-  if (guardSession || lcSession) {
+  // Lakefront LC/Admin and Beach Admin sessions also count as staff access.
+  const guardRole = guardSession?.role;
+  const adminRole = lcSession?.role;
+  if (["guard", "beach"].includes(guardRole) || ["lc", "admin"].includes(adminRole)) {
     return NextResponse.next();
   }
 

@@ -15,13 +15,14 @@ export async function POST(req) {
       return NextResponse.json({ success: false, error: "Missing application." }, { status: 400 });
     }
 
-    const { lcAuth } = await getAuthStatus();
+    const { lcAuth, portal } = await getAuthStatus();
     const sb = getServiceClient();
 
     const { data: app, error: appErr } = await sb
       .from("applications")
-      .select("id, shift_id, applicant_email, applicant_name, status")
+      .select("id, shift_id, applicant_email, applicant_name, status, shifts!inner(id, portal)")
       .eq("id", applicationId)
+      .eq("shifts.portal", portal || "lakefront")
       .single();
 
     if (appErr || !app) {

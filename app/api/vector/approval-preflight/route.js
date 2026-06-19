@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireLC } from "@/lib/auth";
+import { requireLC, getAuthStatus } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { validatePersonDate, checkApplicationEligibility } from "@/lib/vector-core";
 import { refreshStoredShiftVectorLengths, shiftLengthForCurrentHours } from "@/lib/current-hours-refresh";
@@ -48,8 +48,9 @@ export async function POST(req) {
     const { shiftId, appId } = await req.json();
     if (!shiftId || !appId) return NextResponse.json({ success: false, error: "Missing fields." }, { status: 400 });
 
+    const { portal } = await getAuthStatus();
     const sb = getServiceClient();
-    const { data: shift, error: sErr } = await sb.from("shifts").select("*").eq("id", shiftId).single();
+    const { data: shift, error: sErr } = await sb.from("shifts").select("*").eq("id", shiftId).eq("portal", portal || "lakefront").single();
     if (sErr || !shift) return NextResponse.json({ success: false, error: "Shift not found." }, { status: 404 });
     const { data: app, error: aErr } = await sb.from("applications").select("*").eq("id", appId).eq("shift_id", shiftId).single();
     if (aErr || !app) return NextResponse.json({ success: false, error: "Application not found." }, { status: 404 });

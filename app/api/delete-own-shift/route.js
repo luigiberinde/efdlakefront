@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase-server";
+import { currentPortalOrLakefront } from "@/lib/auth";
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
@@ -9,6 +10,7 @@ export async function POST(req) {
   try {
     const { shiftId, email } = await req.json();
     const cleanEmail = normalizeEmail(email);
+    const portal = await currentPortalOrLakefront();
 
     if (!shiftId || !cleanEmail) {
       return NextResponse.json({ success: false, error: "Missing shift or email." }, { status: 400 });
@@ -18,8 +20,9 @@ export async function POST(req) {
 
     const { data: shift, error: shiftErr } = await sb
       .from("shifts")
-      .select("id, poster_email, poster_name, date, type, time, status")
+      .select("id, poster_email, poster_name, date, type, time, status, portal")
       .eq("id", shiftId)
+      .eq("portal", portal)
       .single();
 
     if (shiftErr || !shift) {
@@ -55,6 +58,7 @@ export async function POST(req) {
       .from("shifts")
       .delete()
       .eq("id", shiftId)
+      .eq("portal", portal)
       .eq("status", "open");
 
     if (shiftDeleteErr) {

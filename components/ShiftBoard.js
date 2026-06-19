@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase-browser";
+import { useRouter } from "next/navigation";
 
 const PS = 10;
 
@@ -19,7 +20,36 @@ function inSameWeek(base,compare) {
   const c=new Date(compare+"T12:00:00");
   return c>=mon&&c<next;
 }
-function tc(t) { return t==="guard"?{bg:"#FCEBEB",border:"#F09595",text:"#791F1F"}:{bg:"#FAEEDA",border:"#FAC775",text:"#633806"}; }
+function tc(t) {
+  if (t === "manager") return { bg: "#FAEEDA", border: "#FAC775", text: "#633806" };
+  if (t === "gate_attendant") return { bg: "#EAF7EA", border: "#78C98A", text: "#1F5E2A" };
+  if (t === "office_staff") return { bg: "#EFEFF2", border: "#AEB4BE", text: "#3D424B" };
+  return { bg: "#FCEBEB", border: "#F09595", text: "#791F1F" };
+}
+function portalLabel(portal) { return portal === "beach" ? "Beach Staff" : "Lakefront"; }
+function adminLabel(portal) { return portal === "beach" ? "Admin" : "LC"; }
+function isBeachPortal(portal) { return portal === "beach"; }
+function roleOptionsForPortal(portal) {
+  return isBeachPortal(portal)
+    ? [{ value: "gate_attendant", label: "Gate Attendant" }, { value: "office_staff", label: "Office Staff" }]
+    : [{ value: "guard", label: "Guard" }, { value: "manager", label: "Manager" }];
+}
+function defaultRoleForPortal(portal) { return isBeachPortal(portal) ? "gate_attendant" : "guard"; }
+function roleLabel(value) {
+  if (value === "manager") return "Manager";
+  if (value === "gate_attendant") return "Gate Attendant";
+  if (value === "office_staff") return "Office Staff";
+  if (value === "either") return "Either role";
+  if (value === "any") return "Any";
+  return "Guard";
+}
+function normalizeRoleForPortal(value, portal) {
+  const allowed = roleOptionsForPortal(portal).map(o => o.value);
+  return allowed.includes(value) ? value : defaultRoleForPortal(portal);
+}
+function RoleSelect({ value, onChange, portal, includeAny = false, style }) {
+  return <select style={style || F} value={includeAny && value === "any" ? "any" : normalizeRoleForPortal(value, portal)} onChange={e => onChange(e.target.value)}>{includeAny && <option value="any">Any</option>}{roleOptionsForPortal(portal).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>;
+}
 function chicagoTodayStr() {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
   const get = type => parts.find(p => p.type === type)?.value;
@@ -242,8 +272,13 @@ function inferTimeFromVectorShift(s) {
   if (hasLate && !hasEarly) return "late";
   return "early";
 }
-function inferTypeFromVectorShift(s) {
+function inferTypeFromVectorShift(s, portal = "lakefront") {
   const txt = vectorShiftText(s);
+  if (isBeachPortal(portal)) {
+    if (/\boffice\b|\bfront\s*desk\b|\badmin\b/.test(txt)) return "office_staff";
+    if (/\bgate\b|\badmission\b|\badmissions\b/.test(txt)) return "gate_attendant";
+    return "gate_attendant";
+  }
   if (/\bmanager\b|\bmgr\b/.test(txt)) return "manager";
   return "guard";
 }
@@ -490,14 +525,13 @@ function groupByDate(rows) {
   }, {});
 }
 function rolePreferenceLabel(v) {
-  if (v === "either") return "Either role";
-  if (v === "manager") return "Manager";
-  return "Guard";
+  return roleLabel(v);
 }
 
 
 export default function ShiftBoard() {
   const sb = getSupabase();
+  const router = useRouter();
 
   // ── State ─────────────────────────────────────────────
   const [shifts, setShifts] = useState([]);
@@ -510,6 +544,13 @@ export default function ShiftBoard() {
   const [actionLoading, setActionLoading] = useState(false);
 
   const [lcAuth, setLcAuth] = useState(false);
+  const [portal, setPortal] = useState("lakefront");
+  const [authRole, setAuthRole] = useState(null);
+  const beachPortal = isBeachPortal(portal);
+  const defaultRole = defaultRoleForPortal(portal);
+  const activeAdminLabel = adminLabel(portal);
+  const siteTitle = beachPortal ? "Beach Staff Shift Swap" : "Lakefront Shift Swap";
+  const visibleAdminTab = beachPortal ? "Admin view" : "LC view";
   const [view, setView] = useState("board");
   const [boardTab, setBoardTab] = useState("open");
   const [dateFilter, setDateFilter] = useState("");
@@ -585,7 +626,7 @@ export default function ShiftBoard() {
   const [approvalOnCallCustomEnd, setApprovalOnCallCustomEnd] = useState("");
   const [approvalOnCallInstructions, setApprovalOnCallInstructions] = useState("");
 
-  const newBulkRow = () => ({ tempId: `${Date.now()}-${Math.random().toString(16).slice(2)}`, type: "guard", time: "early", date: "", note: "", selectedVectorShiftId: "" });
+  const newBulkRow = () => ({ tempId: `${Date.now()}-${Math.random().toString(16).slice(2)}`, type: defaultRole, time: "early", date: "", note: "", selectedVectorShiftId: "" });
   const [showBulkPostModal, setShowBulkPostModal] = useState(false);
   const [bulkName, setBulkName] = useState("");
   const [bulkEmail, setBulkEmail] = useState("");
@@ -602,7 +643,7 @@ export default function ShiftBoard() {
   const [manualMatchBusy, setManualMatchBusy] = useState(null);
 
   // Post form
-  const emptyPostForm = {name:"",email:"",type:"guard",time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:"guard",swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:"",lcOverride:false,lcShiftLength:"",lcShiftStart:"",lcShiftEnd:"",selectedVectorShiftId:"",selectedSwapVectorShiftId:""};
+  const emptyPostForm = {name:"",email:"",type:defaultRole,time:"early",date:"",note:"",isSwap:false,swapName:"",swapEmail:"",swapType:defaultRole,swapTime:"early",swapDate:"",hasPreferred:false,prefName:"",prefEmail:"",prefReason:"",lcOverride:false,lcShiftLength:"",lcShiftStart:"",lcShiftEnd:"",selectedVectorShiftId:"",selectedSwapVectorShiftId:""};
   const [pf, setPf] = useState(emptyPostForm);
   const [pfEmailOk, setPfEmailOk] = useState(false);
   const [pfErr, setPfErr] = useState("");
@@ -643,6 +684,8 @@ export default function ShiftBoard() {
   const [aSpecialIds, setASpecialIds] = useState([]);
   const [aErr, setAErr] = useState("");
 
+  const todoTotal = todoCount + (beachPortal ? 0 : onCallTodoRows.length);
+
   const showToast = m => { setToast(m); setTimeout(()=>setToast(null),3000); };
   const refetchRef = useRef(null);
   const restoreScrollSoon = useCallback((y) => {
@@ -653,7 +696,7 @@ export default function ShiftBoard() {
 
   // ── Check LC auth on mount ────────────────────────────
   useEffect(() => {
-    fetch("/api/auth/status").then(r=>r.json()).then(d=>setLcAuth(d.lcAuth)).catch(()=>{});
+    fetch("/api/auth/status").then(r=>r.json()).then(d=>{ setLcAuth(!!d.lcAuth); setPortal(d.portal || "lakefront"); setAuthRole(d.role || null); }).catch(()=>{});
     fetch("/api/expire", { method: "POST" }).catch(()=>{});
   }, []);
 
@@ -669,6 +712,7 @@ export default function ShiftBoard() {
         p_date: dateFilter || null,
         p_limit: PS,
         p_offset: from,
+        p_portal: portal,
       });
       if (error) { console.error("LC review RPC error:", error); setLoading(false); return; }
       visibleShifts = rpcResult?.shifts || [];
@@ -680,6 +724,7 @@ export default function ShiftBoard() {
         p_date: dateFilter || null,
         p_limit: PS,
         p_offset: from,
+        p_portal: portal,
       });
       if (error) { console.error("Closed/history date-sort RPC error:", error); setLoading(false); return; }
       visibleShifts = rpcResult?.shifts || [];
@@ -687,7 +732,7 @@ export default function ShiftBoard() {
 
     // ── ALL OTHER VIEWS: direct Supabase queries ────────
     } else {
-      let query = sb.from("shifts").select("*", { count: "exact" });
+      let query = sb.from("shifts").select("*", { count: "exact" }).eq("portal", portal);
 
       if (view === "board") {
         if (boardTab === "open") {
@@ -767,8 +812,9 @@ export default function ShiftBoard() {
         if (pendingEmails.length > 0) {
           const { data: crossApps } = await sb
             .from("applications")
-            .select("id, shift_id, applicant_email, status, hours_after_shift, approved_at, applied_at, shifts!inner(date, type, time)")
+            .select("id, shift_id, applicant_email, status, hours_after_shift, approved_at, applied_at, shifts!inner(date, type, time, portal)")
             .in("applicant_email", pendingEmails)
+            .eq("shifts.portal", portal)
             .in("status", ["approved", "pending"]);
           setStatsApps(crossApps || []);
         } else {
@@ -783,18 +829,18 @@ export default function ShiftBoard() {
     }
 
     setLoading(false);
-  }, [sb, view, boardTab, dateFilter, page, lcTab, todoTab, historySort, lcAuth]);
+  }, [sb, view, boardTab, dateFilter, page, lcTab, todoTab, historySort, lcAuth, portal]);
 
   // Fetch badge counts
   const fetchCounts = useCallback(async () => {
-    const { count: oc } = await sb.from("shifts").select("id", { count: "exact", head: true }).eq("status", "open");
+    const { count: oc } = await sb.from("shifts").select("id", { count: "exact", head: true }).eq("portal", portal).eq("status", "open");
     setOpenCount(oc || 0);
-    const { count: tc } = await sb.from("shifts").select("id", { count: "exact", head: true }).eq("status", "taken").eq("todo_complete", false);
+    const { count: tc } = await sb.from("shifts").select("id", { count: "exact", head: true }).eq("portal", portal).eq("status", "taken").eq("todo_complete", false);
     setTodoCount(tc || 0);
-  }, [sb]);
+  }, [sb, portal]);
 
   const fetchOnCallList = useCallback(async () => {
-    if (!(view === "manager" && lcAuth && lcTab === "oncall")) return;
+    if (beachPortal || !(view === "manager" && lcAuth && lcTab === "oncall")) return;
     setOnCallListLoading(true);
     try {
       const qs = dateFilter ? `?date=${encodeURIComponent(dateFilter)}` : "";
@@ -803,10 +849,10 @@ export default function ShiftBoard() {
       if (!res.ok || !data.success) { showToast(data.error || "Could not load On-Call list."); setOnCallRows([]); return; }
       setOnCallRows(data.signups || []);
     } finally { setOnCallListLoading(false); }
-  }, [view, lcAuth, lcTab, dateFilter]);
+  }, [view, lcAuth, lcTab, dateFilter, beachPortal]);
 
   const fetchOnCallTodoRows = useCallback(async () => {
-    if (!(view === "manager" && lcAuth && lcTab === "todo")) return;
+    if (beachPortal || !(view === "manager" && lcAuth && lcTab === "todo")) return;
     try {
       const qs = new URLSearchParams();
       qs.set("todo", todoTab === "done" ? "done" : "pending");
@@ -818,7 +864,7 @@ export default function ShiftBoard() {
     } catch {
       setOnCallTodoRows([]);
     }
-  }, [view, lcAuth, lcTab, todoTab, dateFilter]);
+  }, [view, lcAuth, lcTab, todoTab, dateFilter, beachPortal]);
 
   // Run fetch on mount and dependency changes
   useEffect(() => { fetchData(); fetchCounts(); }, [fetchData, fetchCounts]);
@@ -878,14 +924,14 @@ export default function ShiftBoard() {
       id, poster_name, poster_email, poster_vector_full_name, type, time, date,
       is_swap, swap_partner_name, swap_partner_email, swap_partner_type, swap_partner_time, swap_partner_date,
       has_preferred, preferred_name, preferred_email
-    `).eq("status","open").eq("date",base.date).eq("type",base.type).eq("time",base.time).neq("id",shiftId);
+    `).eq("portal", portal).eq("status","open").eq("date",base.date).eq("type",base.type).eq("time",base.time).neq("id",shiftId);
     return data || [];
-  }, [sb, shifts]);
+  }, [sb, shifts, portal]);
 
   // ── Post shift ────────────────────────────────────────
   const openPostModal = () => {
     const id = loadIdentity();
-    setPf({ ...emptyPostForm, name: id.name, email: id.email });
+    setPf({ ...emptyPostForm, type: defaultRole, swapType: defaultRole, name: id.name, email: id.email });
     setPfEmailOk(false);
     setPfErr("");
     setPostWarnings([]);
@@ -927,8 +973,8 @@ export default function ShiftBoard() {
     if (pf.isSwap && (!pf.swapName.trim()||!pf.swapEmail.trim()||!pf.swapDate)) { setPfErr("Fill in all swap partner details."); return false; }
     if (pf.isSwap && daysFromTodayChicago(pf.swapDate) < 0) { setPfErr("The swap partner's shift date cannot be before today's date."); return false; }
     if (pf.hasPreferred && (!pf.prefName.trim()||!pf.prefEmail.trim()||!pf.prefReason.trim())) { setPfErr("Fill in the preferred applicant name, email, and reason."); return false; }
-    if (pf.lcOverride && !lcAuth) { setPfErr("Only LCs can post without Vector confirmation."); return false; }
-    if (pf.lcOverride && (!pf.lcShiftLength || Number(pf.lcShiftLength) <= 0)) { setPfErr("Enter the shift length for this LC-created open shift."); return false; }
+    if (pf.lcOverride && !lcAuth) { setPfErr(`Only ${activeAdminLabel}s can post without Vector confirmation.`); return false; }
+    if (pf.lcOverride && (!pf.lcShiftLength || Number(pf.lcShiftLength) <= 0)) { setPfErr("Enter the shift length for this admin-created open shift."); return false; }
 
     const warnings = [...postDateWarnings(pf.date)];
     const { count: sameDayCount } = await sb.from("shifts").select("id",{count:"exact",head:true}).eq("status","open").eq("poster_email",e).eq("date",pf.date);
@@ -1031,7 +1077,7 @@ export default function ShiftBoard() {
       } else if (rows.length === 1) {
         const s = rows[0];
         setSingleSelectedKey(bulkShiftKey(s, 0));
-        setPf(p => ({ ...p, selectedVectorShiftId: String(s.shift_id || ""), type: inferTypeFromVectorShift(s), time: inferTimeFromVectorShift(s), date: vectorShiftDate(s) || p.date }));
+        setPf(p => ({ ...p, selectedVectorShiftId: String(s.shift_id || ""), type: inferTypeFromVectorShift(s, portal), time: inferTimeFromVectorShift(s), date: vectorShiftDate(s) || p.date }));
       }
     } finally { setSingleVectorLoading(false); }
   };
@@ -1048,7 +1094,7 @@ export default function ShiftBoard() {
 
   const multiRowBody = ({ shift, cfg }) => {
     const date = vectorShiftDate(shift);
-    const type = inferTypeFromVectorShift(shift);
+    const type = inferTypeFromVectorShift(shift, portal);
     const time = inferTimeFromVectorShift(shift);
     return {
       name: pf.name.trim(),
@@ -1066,7 +1112,7 @@ export default function ShiftBoard() {
       isSwap: cfg.mode === "swap",
       swapName: cfg.swapName || "",
       swapEmail: normEmail(cfg.swapEmail || ""),
-      swapType: cfg.swapType || "guard",
+      swapType: cfg.swapType || defaultRole,
       swapTime: cfg.swapTime || "early",
       swapDate: cfg.swapDate || "",
     };
@@ -1075,7 +1121,7 @@ export default function ShiftBoard() {
   const validateMultiConfigRow = ({ shift, cfg }) => {
     const date = vectorShiftDate(shift);
     const ownTime = inferTimeFromVectorShift(shift);
-    const label = `${fmtDate(date)} · ${ownTime === "late" ? "Late" : "Early"} ${inferTypeFromVectorShift(shift) === "manager" ? "Manager" : "Guard"}`;
+    const label = `${fmtDate(date)} · ${ownTime === "late" ? "Late" : "Early"} ${roleLabel(inferTypeFromVectorShift(shift, portal))}`;
     if (cfg.mode === "preferred" && (!cfg.prefName?.trim() || !normEmail(cfg.prefEmail) || !cfg.prefReason?.trim())) return `${label}: fill in the preferred applicant name, email, and reason.`;
     if (cfg.mode === "swap" && (!cfg.swapName?.trim() || !normEmail(cfg.swapEmail) || !cfg.swapDate)) return `${label}: fill in the swap partner name, email, and shift date.`;
     if (cfg.mode === "swap" && daysFromTodayChicago(cfg.swapDate) < 0) return `${label}: the swap partner's shift date cannot be before today's date.`;
@@ -1116,7 +1162,7 @@ export default function ShiftBoard() {
       const next = {};
       rows.forEach((s, idx) => {
         const key = bulkShiftKey(s, idx);
-        next[key] = multiSelected[key] || { selected: false, mode: "normal", note: "", prefName: "", prefEmail: "", prefReason: "", swapName: "", swapEmail: "", swapType: inferTypeFromVectorShift(s), swapTime: inferTimeFromVectorShift(s), swapDate: vectorShiftDate(s) };
+        next[key] = multiSelected[key] || { selected: false, mode: "normal", note: "", prefName: "", prefEmail: "", prefReason: "", swapName: "", swapEmail: "", swapType: inferTypeFromVectorShift(s, portal), swapTime: inferTimeFromVectorShift(s), swapDate: vectorShiftDate(s) };
       });
       setMultiSelected(next);
       if (rows.length === 0) setMultiErr("Vector did not show any future shifts for you in that date range.");
@@ -1718,18 +1764,21 @@ export default function ShiftBoard() {
       const [postsRes, appsRes, watchesRes, onCallRes] = await Promise.all([
         sb.from("shifts")
           .select("*")
+          .eq("portal", portal)
           .order("date", { ascending: false })
           .limit(500),
         sb.from("applications")
-          .select("*, shifts(*)")
+          .select("*, shifts!inner(*)")
+          .eq("shifts.portal", portal)
           .order("applied_at", { ascending: false })
           .limit(500),
         sb.from("shift_watch_requests")
           .select("*")
+          .eq("portal", portal)
           .eq("status", "active")
           .order("created_at", { ascending: false })
           .limit(500),
-        fetch("/api/on-call/my-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: e }) }).then(r => r.json()),
+        beachPortal ? Promise.resolve({ success: true, signups: [] }) : fetch("/api/on-call/my-activity", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: e }) }).then(r => r.json()),
       ]);
 
       if (postsRes.error) throw postsRes.error;
@@ -1756,7 +1805,7 @@ export default function ShiftBoard() {
     } finally {
       setMineLoading(false);
     }
-  }, [sb, mineEmail]);
+  }, [sb, mineEmail, portal, beachPortal]);
 
   const mineDeletePost = async (shiftId) => {
     if (!mine?.email) return;
@@ -1904,13 +1953,20 @@ export default function ShiftBoard() {
 
   // ── LC login ──────────────────────────────────────────
   const doLcLogin = async () => {
-    const res = await fetch("/api/auth/lc", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ password: pwInput }) });
-    if (res.ok) { setLcAuth(true); setPwError(false); } else setPwError(true);
+    const res = await fetch("/api/auth/lc", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ password: pwInput, portal }) });
+    if (res.ok) { setLcAuth(true); setAuthRole(beachPortal ? "admin" : "lc"); setPwError(false); } else setPwError(true);
   };
 
   const doLcLogout = async () => {
     await fetch("/api/auth/lc/logout", { method: "POST" });
-    setLcAuth(false); setView("board"); setPwInput(""); setPwError(false);
+    setLcAuth(false); setAuthRole(beachPortal ? "beach" : "guard"); setView("board"); setPwInput(""); setPwError(false); setLcTab("review");
+  };
+
+  const doAccessLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    setLcAuth(false); setAuthRole(null); setView("board"); setPwInput(""); setPwError(false);
+    router.push("/login");
+    router.refresh();
   };
 
   // ── Derived data from current page ────────────────────
@@ -2170,23 +2226,24 @@ export default function ShiftBoard() {
     <div style={{ fontFamily: "Inter,ui-sans-serif,system-ui,-apple-system,sans-serif", maxWidth: 720, margin: "0 auto", padding: "0 1rem 3rem", color: "#172033" }}>
       <header style={{ padding: "1.5rem 0 1rem", borderBottom: "2px solid #1a2744" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 4 }}>
-          <p style={{ fontSize: 12, color: "#5e6675", margin: 0, letterSpacing: "1px", textTransform: "uppercase" }}>City of Evanston Fire Department</p>
-          {!lcAuth ? <button onClick={() => setView("manager")} style={{ fontSize: 12, color: "#8a92a0", background: "none", border: "none", cursor: "pointer", letterSpacing: "0.8px", textTransform: "uppercase" }}>LC</button>
-            : <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#0C447C", background: "#E6F1FB", padding: "4px 10px", borderRadius: 999 }}>LC mode active</span>
-                <button onClick={doLcLogout} style={{ fontSize: 11, color: "#8a92a0", background: "none", border: "none", cursor: "pointer", textTransform: "uppercase" }}>Log out</button>
+          <p style={{ fontSize: 12, color: "#5e6675", margin: 0, letterSpacing: "1px", textTransform: "uppercase" }}>City of Evanston Fire Department · {portalLabel(portal)}</p>
+          {!lcAuth ? <div style={{ display: "flex", alignItems: "center", gap: 10 }}><button onClick={() => setView("manager")} style={{ fontSize: 12, color: "#8a92a0", background: "none", border: "none", cursor: "pointer", letterSpacing: "0.8px", textTransform: "uppercase" }}>{activeAdminLabel}</button><button onClick={doAccessLogout} style={{ fontSize: 11, color: "#8a92a0", background: "none", border: "none", cursor: "pointer", textTransform: "uppercase" }}>Switch site</button></div>
+            : <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#0C447C", background: "#E6F1FB", padding: "4px 10px", borderRadius: 999 }}>{activeAdminLabel} mode active</span>
+                <button onClick={doLcLogout} style={{ fontSize: 11, color: "#8a92a0", background: "none", border: "none", cursor: "pointer", textTransform: "uppercase" }}>Log out {activeAdminLabel}</button>
+                <button onClick={doAccessLogout} style={{ fontSize: 11, color: "#8a92a0", background: "none", border: "none", cursor: "pointer", textTransform: "uppercase" }}>Switch site</button>
               </div>}
         </div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: "-0.3px" }}>Lakefront Shift Swap</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, letterSpacing: "-0.3px" }}>{siteTitle}</h1>
       </header>
 
       <nav style={{ display: "flex", gap: 0, borderBottom: "0.5px solid #e0e3e8", marginBottom: "1rem", alignItems: "center" }}>
         <button style={tabS(view==="board")} onClick={() => setView("board")}>Shift board</button>
-        {lcAuth && <button style={tabS(view==="manager")} onClick={() => setView("manager")}>LC view</button>}
+        {lcAuth && <button style={tabS(view==="manager")} onClick={() => setView("manager")}>{visibleAdminTab}</button>}
         <div style={{ flex: 1 }} />
         <button onClick={openMineModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>My activity</button>
         <button onClick={openNotifyModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>Notify me</button>
-        <button onClick={openOnCallModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>On-Call</button>
+        {!beachPortal && <button onClick={openOnCallModal} style={{ ...btn2, margin: "6px 8px 6px 0" }}>On-Call</button>}
         <button onClick={openPostModal} style={{ ...btnP, margin: "6px 0" }}>Post a shift</button>
       </nav>
 
@@ -2199,7 +2256,7 @@ export default function ShiftBoard() {
         {boardTab === "closed" && (
           <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
             <span style={{ fontSize: 13, color: "#5e6675", fontWeight: 700 }}>Sort by</span>
-            <button style={pillS(historySort==="action")} onClick={() => setHistorySort("action")}>Most recent LC action</button>
+            <button style={pillS(historySort==="action")} onClick={() => setHistorySort("action")}>Most recent admin action</button>
             <button style={pillS(historySort==="date")} onClick={() => setHistorySort("date")}>Shift date</button>
           </div>
         )}
@@ -2214,8 +2271,8 @@ export default function ShiftBoard() {
       {/* ── LC LOGIN ─────────────────────────────────── */}
       {view === "manager" && !lcAuth && (
         <div style={{ maxWidth: 320, margin: "3rem auto", textAlign: "center", background: "#fff", padding: 24, borderRadius: 18, border: "0.5px solid #e0e3e8", boxShadow: "0 12px 32px rgba(15,23,42,0.06)" }}>
-          <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>LC</h2>
-          <p style={{ fontSize: 13, color: "#5e6675", marginBottom: 20 }}>Enter password.</p>
+          <h2 style={{ fontSize: 18, margin: "0 0 8px" }}>{activeAdminLabel}</h2>
+          <p style={{ fontSize: 13, color: "#5e6675", marginBottom: 20 }}>Enter {activeAdminLabel} password.</p>
           <input type="password" placeholder="Password" value={pwInput} onChange={e => { setPwInput(e.target.value); setPwError(false); }} onKeyDown={e => { if (e.key === "Enter") doLcLogin(); }} style={{ ...F, marginBottom: 12, textAlign: "center" }} />
           {pwError && <p style={{ fontSize: 13, color: "#A32D2D", marginBottom: 12 }}>Good try, but wrong.</p>}
           <button onClick={doLcLogin} style={btnP}>Enter</button>
@@ -2226,8 +2283,8 @@ export default function ShiftBoard() {
       {view === "manager" && lcAuth && <>
         <div style={{ display: "flex", borderBottom: "0.5px solid #e0e3e8", marginBottom: 20 }}>
           <button style={tabS(lcTab==="review")} onClick={() => setLcTab("review")}>Open shift review</button>
-          <button style={tabS(lcTab==="oncall")} onClick={() => setLcTab("oncall")}>On-Call ({onCallRows.length})</button>
-          <button style={tabS(lcTab==="todo")} onClick={() => setLcTab("todo")}>To-do ({todoCount + onCallTodoRows.length})</button>
+          {!beachPortal && <button style={tabS(lcTab==="oncall")} onClick={() => setLcTab("oncall")}>On-Call ({onCallRows.length})</button>}
+          <button style={tabS(lcTab==="todo")} onClick={() => setLcTab("todo")}>To-do ({todoTotal})</button>
           <button style={tabS(lcTab==="history")} onClick={() => setLcTab("history")}>History</button>
         </div>
 
@@ -2274,7 +2331,7 @@ export default function ShiftBoard() {
           </>;
         })()}
 
-        {lcTab === "oncall" && <>
+        {!beachPortal && lcTab === "oncall" && <>
           <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px", lineHeight: 1.5 }}>People who signed up to be On-Call. This does not schedule them in Vector; it gives LCs a clean call list with hours and OT warnings.</p>
           {renderDateFilter()}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -2323,20 +2380,19 @@ export default function ShiftBoard() {
                 </div>
               ))}
             </div>
-          ))}
-        </>}
+          ))}</>}
 
         {lcTab === "todo" && <>
           <p style={{ fontSize: 13, color: "#5e6675", margin: "0 0 16px" }}>Update these in Vector manually, then mark as done.</p>
           <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <button style={pillS(todoTab==="pending")} onClick={() => setTodoTab("pending")}>Needs update ({todoCount + onCallTodoRows.length})</button>
+            <button style={pillS(todoTab==="pending")} onClick={() => setTodoTab("pending")}>Needs update ({todoTotal})</button>
             <button style={pillS(todoTab==="done")} onClick={() => setTodoTab("done")}>Completed</button>
           </div>
           {renderDateFilter()}{renderPagination()}
-          {shifts.length === 0 && onCallTodoRows.length === 0 ? <Empty>{todoTab==="pending"?"All caught up — nothing is waiting on a Vector update.":"Nothing completed yet. Items you mark done will show up here."}</Empty>
+          {shifts.length === 0 && (beachPortal || onCallTodoRows.length === 0) ? <Empty>{todoTab==="pending"?"All caught up — nothing is waiting on a Vector update.":"Nothing completed yet. Items you mark done will show up here."}</Empty>
             : <>
                 {shifts.map(s => <TodoRow key={s.id} shift={s} done={todoTab==="done"} />)}
-                {onCallTodoRows.map(row => <OnCallTodoRow key={`oncall-${row.id}`} row={row} done={todoTab==="done"} />)}
+                {!beachPortal && onCallTodoRows.map(row => <OnCallTodoRow key={`oncall-${row.id}`} row={row} done={todoTab==="done"} />)}
               </>}
           {renderPagination()}
         </>}
@@ -2344,7 +2400,7 @@ export default function ShiftBoard() {
         {lcTab === "history" && <>
           <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
             <span style={{ fontSize: 13, color: "#5e6675", fontWeight: 700 }}>Sort by</span>
-            <button style={pillS(historySort==="action")} onClick={() => setHistorySort("action")}>Most recent LC action</button>
+            <button style={pillS(historySort==="action")} onClick={() => setHistorySort("action")}>Most recent admin action</button>
             <button style={pillS(historySort==="date")} onClick={() => setHistorySort("date")}>Shift date</button>
           </div>
           {renderDateFilter()}{renderPagination()}
@@ -2406,7 +2462,7 @@ export default function ShiftBoard() {
         <LabeledInput label="Your email" type="email" value={nf.email} onChange={v => { setNf(f=>({...f,email:v})); setNfEmailOk(false); }} placeholder="aeinstein@cityofevanston.org" />
         <CheckBox checked={nfEmailOk} onChange={setNfEmailOk}>I confirm this is my correct email.</CheckBox>
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-          <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Role</label><select style={F} value={nf.type} onChange={e => setNf(f=>({...f,type:e.target.value}))}><option value="any">Any</option><option value="guard">Guard</option><option value="manager">Manager</option></select></div>
+          <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Role</label><RoleSelect style={F} value={nf.type} portal={portal} includeAny onChange={v => setNf(f=>({...f,type:v}))} /></div>
           <div style={{ flex: 1 }}><label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Time</label><select style={F} value={nf.time} onChange={e => setNf(f=>({...f,time:e.target.value}))}><option value="any">Any</option><option value="early">Early</option><option value="late">Late</option></select></div>
         </div>
         <div style={{ display: "flex", gap: 12 }}>
@@ -2433,7 +2489,7 @@ export default function ShiftBoard() {
           return <div key={row.tempId} style={{ border: "0.5px solid #e0e3e8", borderRadius: 14, padding: 12, marginBottom: 10, background: "#f6f7f9" }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8 }}><b style={{ fontSize: 13 }}>Shift {idx + 1}</b>{bulkRows.length > 1 && <button onClick={() => removeBulkRow(row.tempId)} style={{ ...btn2, padding: "3px 8px", fontSize: 11 }}>Remove</button>}</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
-              <select style={F} value={row.type} onChange={e => updateBulkRow(row.tempId, { type: e.target.value })}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+              <RoleSelect style={F} value={row.type} portal={portal} onChange={v => updateBulkRow(row.tempId, { type: v })} />
               <select style={F} value={row.time} onChange={e => updateBulkRow(row.tempId, { time: e.target.value })}><option value="early">Early</option><option value="late">Late</option></select>
             </div>
             <input style={{ ...F, marginBottom: 8 }} type="date" value={row.date} onChange={e => updateBulkRow(row.tempId, { date: e.target.value })} />
@@ -2485,7 +2541,7 @@ export default function ShiftBoard() {
           const currentCfg = currentRow?.cfg || {};
           const currentShift = currentRow?.shift;
           const currentKey = currentRow?.key;
-          const currentType = currentShift ? inferTypeFromVectorShift(currentShift) : "guard";
+          const currentType = currentShift ? inferTypeFromVectorShift(currentShift, portal) : defaultRole;
           const currentTime = currentShift ? inferTimeFromVectorShift(currentShift) : "early";
           return <div style={{ padding: 16, border: "0.5px solid #85B7EB", borderRadius: 12, background: "#F5FAFF", marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: "#0C447C", marginBottom: 6 }}>Post multiple from Vector</div>
@@ -2503,13 +2559,13 @@ export default function ShiftBoard() {
                   const key = bulkShiftKey(s, idx);
                   const cfg = multiSelected[key] || {};
                   const selected = cfg.selected === true;
-                  const type = inferTypeFromVectorShift(s);
+                  const type = inferTypeFromVectorShift(s, portal);
                   const time = inferTimeFromVectorShift(s);
                   return <div key={key} style={{ border: `0.5px solid ${selected ? "#85B7EB" : "#e0e3e8"}`, borderRadius: 12, background: selected ? "#fff" : "#f6f7f9", padding: 12 }}>
                     <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}>
                       <input type="checkbox" checked={selected} onChange={e => updateMultiRow(key, { selected: e.target.checked })} style={{ marginTop: 4 }} />
                       <span style={{ flex: 1 }}>
-                        <b>{fmtDate(vectorShiftDate(s))} · {time === "late" ? "Late" : "Early"} {type === "manager" ? "Manager" : "Guard"}</b><br/>
+                        <b>{fmtDate(vectorShiftDate(s))} · {time === "late" ? "Late" : "Early"} {roleLabel(type)}</b><br/>
                         <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(s)}</span>
                       </span>
                     </label>
@@ -2525,7 +2581,7 @@ export default function ShiftBoard() {
             {multiStage === "configure" && currentRow && <>
               <InfoBlock badge={`${multiConfigIndex + 1}/${selectedRows.length}`}>Configure this selected shift. The app checks this shift before moving to the next one, so errors get caught immediately.</InfoBlock>
               <div style={{ padding: 12, border: "0.5px solid #c7ccd4", borderRadius: 12, background: "#fff", marginBottom: 12 }}>
-                <b>{fmtDate(vectorShiftDate(currentShift))} · {currentTime === "late" ? "Late" : "Early"} {currentType === "manager" ? "Manager" : "Guard"}</b><br/>
+                <b>{fmtDate(vectorShiftDate(currentShift))} · {currentTime === "late" ? "Late" : "Early"} {roleLabel(currentType)}</b><br/>
                 <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(currentShift)}</span>
               </div>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", marginBottom: 6 }}>Is this a normal post, preferred applicant, or requested swap?</div>
@@ -2546,7 +2602,7 @@ export default function ShiftBoard() {
                 <input style={F} value={currentCfg.swapName || ""} onChange={e => updateMultiRow(currentKey, { swapName: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })} placeholder="Swap partner name" />
                 <input style={F} type="email" value={currentCfg.swapEmail || ""} onChange={e => updateMultiRow(currentKey, { swapEmail: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })} placeholder="Swap partner email" />
                 <div style={{ display: "flex", gap: 8 }}>
-                  <select style={F} value={currentCfg.swapType || "guard"} onChange={e => updateMultiRow(currentKey, { swapType: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+                  <RoleSelect style={F} value={currentCfg.swapType || defaultRole} portal={portal} onChange={v => updateMultiRow(currentKey, { swapType: v, swapMismatchWarning: "", swapMismatchConfirmed: false })} />
                   <select style={F} value={currentCfg.swapTime || "early"} onChange={e => updateMultiRow(currentKey, { swapTime: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })}><option value="early">Early</option><option value="late">Late</option></select>
                 </div>
                 <input style={F} type="date" min={chicagoTodayStr()} value={currentCfg.swapDate || vectorShiftDate(currentShift)} onChange={e => updateMultiRow(currentKey, { swapDate: e.target.value, swapMismatchWarning: "", swapMismatchConfirmed: false })} />
@@ -2576,7 +2632,7 @@ export default function ShiftBoard() {
                   const mode = cfg.mode || "normal";
                   const dry = multiDryRunResults.find(r => r.row?.key === row.key);
                   return <div key={`review-${row.key}`} style={{ padding: 10, border: "0.5px solid #e0e3e8", borderRadius: 10, background: "#fff" }}>
-                    <b>{idx + 1}. {fmtDate(vectorShiftDate(row.shift))} · {inferTimeFromVectorShift(row.shift) === "late" ? "Late" : "Early"} {inferTypeFromVectorShift(row.shift) === "manager" ? "Manager" : "Guard"}</b><br/>
+                    <b>{idx + 1}. {fmtDate(vectorShiftDate(row.shift))} · {inferTimeFromVectorShift(row.shift) === "late" ? "Late" : "Early"} {roleLabel(inferTypeFromVectorShift(row.shift, portal))}</b><br/>
                     <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(row.shift)}</span><br/>
                     <span style={{ fontSize: 12, color: mode === "swap" ? "#0C447C" : mode === "preferred" ? "#8A5A00" : "#5e6675" }}>{mode === "swap" ? `Swap with ${cfg.swapName || "(missing name)"} on ${fmtDate(cfg.swapDate)}` : mode === "preferred" ? `Preferred: ${cfg.prefName || "(missing name)"}` : "Normal post"}</span>
                     {dry && !dry.ok && <div style={{ fontSize: 12, color: "#A32D2D", marginTop: 4 }}>Needs attention: {dry.error}</div>}
@@ -2606,10 +2662,10 @@ export default function ShiftBoard() {
             {singleVectorShifts.map((s, idx) => {
               const rowKey = bulkShiftKey(s, idx);
               const selected = singleSelectedKey === rowKey;
-              const type = inferTypeFromVectorShift(s);
+              const type = inferTypeFromVectorShift(s, portal);
               const time = inferTimeFromVectorShift(s);
               return <button type="button" key={rowKey} onClick={() => { setSingleSelectedKey(rowKey); setPf(p=>({...p,selectedVectorShiftId:String(s.shift_id || ""), type, time, date: vectorShiftDate(s) || p.date})); }} style={{ ...btn2, textAlign: "left", borderColor: selected ? "#85B7EB" : "#c7ccd4", background: selected ? "#F5FAFF" : "#fff", padding: 12 }}>
-                <b>{fmtDate(vectorShiftDate(s) || pf.date)} · {time === "late" ? "Late" : "Early"} {type === "manager" ? "Manager" : "Guard"}</b><br/>
+                <b>{fmtDate(vectorShiftDate(s) || pf.date)} · {time === "late" ? "Late" : "Early"} {roleLabel(type)}</b><br/>
                 <span style={{ fontSize: 12, color: "#5e6675" }}>{vectorShiftLabel(s)}</span>
               </button>;
             })}
@@ -2620,7 +2676,7 @@ export default function ShiftBoard() {
           <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Shift type</label>
-              <select style={F} value={pf.type} onChange={e => setPf(p=>({...p,type:e.target.value}))}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+              <RoleSelect style={F} value={pf.type} portal={portal} onChange={v => setPf(p=>({...p,type:v}))} />
             </div>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Time</label>
@@ -2630,10 +2686,10 @@ export default function ShiftBoard() {
           <LabeledInput label="Date" type="date" min={chicagoTodayStr()} value={pf.date} onChange={v => setPf(p=>({...p,date:v}))} />
         </>}
         {lcAuth && <CheckBox checked={pf.lcOverride} onChange={v => { setPf(p=>({...p,lcOverride:v,selectedVectorShiftId:""})); setPostVectorResult(null); }}>
-          LC-created open shift, post without poster Vector confirmation.
+          {activeAdminLabel}-created open shift, post without poster Vector confirmation.
         </CheckBox>}
         {pf.lcOverride && <div style={{ padding: 16, border: "0.5px solid #D9B451", borderRadius: 12, background: "#FFF9E8", marginBottom: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#8A5A00", marginBottom: 12 }}>LC-created open shift details</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#8A5A00", marginBottom: 12 }}>{activeAdminLabel}-created open shift details</div>
           <LabeledInput label="Shift length in hours" type="number" value={pf.lcShiftLength} onChange={v => setPf(p=>({...p,lcShiftLength:v}))} placeholder="Example: 6" />
           <div style={{ display: "flex", gap: 12 }}>
             <LabeledInput label="Start time, optional" value={pf.lcShiftStart} onChange={v => setPf(p=>({...p,lcShiftStart:v}))} placeholder="Example: 8:45 AM" />
@@ -2669,7 +2725,7 @@ export default function ShiftBoard() {
           <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Their shift type</label>
-              <select style={F} value={pf.swapType} onChange={e => setPf(p=>({...p,swapType:e.target.value}))}><option value="guard">Guard</option><option value="manager">Manager</option></select>
+              <RoleSelect style={F} value={pf.swapType} portal={portal} onChange={v => setPf(p=>({...p,swapType:v}))} />
             </div>
             <div style={{ flex: 1 }}>
               <label style={{ fontSize: 13, fontWeight: 700, color: "#5e6675", display: "block", marginBottom: 4 }}>Their time</label>
@@ -2716,7 +2772,7 @@ export default function ShiftBoard() {
               </label>
             </div>
           </WarningBox>}
-          <SummaryBox rows={[["Name",postVectorResult?.posterVector?.vectorUser?.full_name || pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Vector",pf.lcOverride?`LC-created open shift · ${pf.lcShiftLength} hrs`:postVectorResult?.selectedPosterShift?vectorShiftLabel(postVectorResult.selectedPosterShift):"Confirmed"],["Swap",pf.isSwap?postVectorResult?.swapVector?.vectorUser?.full_name ? `Yes, with ${postVectorResult.swapVector.vectorUser.full_name}` : `Yes, with ${pf.swapName}`:"No"],pf.isSwap && postVectorResult?.selectedSwapShift?["Swap partner Vector shift",vectorShiftLabel(postVectorResult.selectedSwapShift)]:null,["Preferred",pf.hasPreferred?postVectorResult?.payloadPreview?.preferred_vector_full_name ? `Yes: ${postVectorResult.payloadPreview.preferred_vector_full_name}` : `Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
+          <SummaryBox rows={[["Name",postVectorResult?.posterVector?.vectorUser?.full_name || pf.name],["Email",pf.email],["Shift",`${pf.date?fmtDate(pf.date):""} ${pf.type} ${pf.time}`],["Vector",pf.lcOverride?`${activeAdminLabel}-created open shift · ${pf.lcShiftLength} hrs`:postVectorResult?.selectedPosterShift?vectorShiftLabel(postVectorResult.selectedPosterShift):"Confirmed"],["Swap",pf.isSwap?postVectorResult?.swapVector?.vectorUser?.full_name ? `Yes, with ${postVectorResult.swapVector.vectorUser.full_name}` : `Yes, with ${pf.swapName}`:"No"],pf.isSwap && postVectorResult?.selectedSwapShift?["Swap partner Vector shift",vectorShiftLabel(postVectorResult.selectedSwapShift)]:null,["Preferred",pf.hasPreferred?postVectorResult?.payloadPreview?.preferred_vector_full_name ? `Yes: ${postVectorResult.payloadPreview.preferred_vector_full_name}` : `Yes: ${pf.prefName}`:"No"],pf.hasPreferred?["Reason",pf.prefReason]:null,["LC note",pf.note||"None"]].filter(Boolean)} />
           <ModalActions disabled={actionLoading || (swapMismatch && !singleSwapMismatchOk)} onCancel={() => setPostConfirmOpen(false)} onConfirm={confirmPost} text="Post shift" />
         </Modal>;
       })()}
@@ -2953,26 +3009,28 @@ export default function ShiftBoard() {
             <div key={w.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                 <b>{fmtDate(w.start_date)}–{fmtDate(w.end_date)}</b>
-                <span style={B(tc(w.type === "any" ? "guard" : w.type).bg, tc(w.type === "any" ? "guard" : w.type).text)}>{w.type === "any" ? "Any role" : w.type}</span>
+                <span style={B(tc(w.type === "any" ? defaultRole : w.type).bg, tc(w.type === "any" ? defaultRole : w.type).text)}>{w.type === "any" ? "Any role" : roleLabel(w.type)}</span>
                 <span style={B("#f6f7f9","#5e6675")}>{w.time === "any" ? "Any time" : w.time}</span>
               </div>
               <button disabled={mineBusyId === `watch-${w.id}`} onClick={() => mineUnsubscribeWatch(w.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `watch-${w.id}` ? 0.55 : 1 }}>{mineBusyId === `watch-${w.id}` ? "Turning off..." : "Unsubscribe"}</button>
             </div>
           ))}
 
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", margin: "16px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>On-Call signups</div>
-          {(!mine.onCalls || mine.onCalls.length === 0) && <Empty>No active On-Call signups under this email.</Empty>}
-          {(mine.onCalls || []).map(o => (
-            <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <b>{fmtDate(o.date)}</b>
-                <span style={B("#EAF3DE", "#27500A")}>{onCallAvailabilityLabel(o)}</span>
-                <span style={B("#f6f7f9", "#5e6675")}>{Number(o.estimated_hours || 0)} hrs</span>
-                {o.would_be_ot && <span style={B("#FCEBEB", "#8A1F1F")}>OT</span>}
+          {!beachPortal && <>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#5e6675", margin: "16px 0 8px", textTransform: "uppercase", letterSpacing: "0.5px" }}>On-Call signups</div>
+            {(!mine.onCalls || mine.onCalls.length === 0) && <Empty>No active On-Call signups under this email.</Empty>}
+            {(mine.onCalls || []).map(o => (
+              <div key={o.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 12px", borderRadius: 12, background: "#f6f7f9", marginBottom: 6, fontSize: 13, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <b>{fmtDate(o.date)}</b>
+                  <span style={B("#EAF3DE", "#27500A")}>{onCallAvailabilityLabel(o)}</span>
+                  <span style={B("#f6f7f9", "#5e6675")}>{Number(o.estimated_hours || 0)} hrs</span>
+                  {o.would_be_ot && <span style={B("#FCEBEB", "#8A1F1F")}>OT</span>}
+                </div>
+                <button disabled={mineBusyId === `oncall-${o.id}`} onClick={() => mineRemoveOnCall(o.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `oncall-${o.id}` ? 0.55 : 1 }}>{mineBusyId === `oncall-${o.id}` ? "Removing..." : "Remove"}</button>
               </div>
-              <button disabled={mineBusyId === `oncall-${o.id}`} onClick={() => mineRemoveOnCall(o.id)} style={{ ...btn2, padding: "4px 10px", fontSize: 12, border: "0.5px solid #D6A4A4", background: "#FFF6F6", color: "#8A1F1F", opacity: mineBusyId === `oncall-${o.id}` ? 0.55 : 1 }}>{mineBusyId === `oncall-${o.id}` ? "Removing..." : "Remove"}</button>
-            </div>
-          ))}
+            ))}
+          </>}
         </>}
 
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
@@ -3078,7 +3136,7 @@ export default function ShiftBoard() {
       })()}
 
       <footer style={{ marginTop: 40, paddingTop: 20, borderTop: "0.5px solid #e0e3e8", color: "#8a92a0", fontSize: 11, lineHeight: 1.6, textAlign: "center" }}>
-        Lakefront Shift Swap maintained by Luigi Berinde. For questions, contact an LC.<br/>Internal scheduling aid only. Final schedule changes must be reflected in Vector.
+        {siteTitle} maintained by Luigi Berinde. For questions, contact an {beachPortal ? "admin" : "LC"}.<br/>Internal scheduling aid only. Final schedule changes must be reflected in Vector.
       </footer>
 
       {toast && <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#1a2744", color: "#fff", padding: "10px 24px", borderRadius: 12, fontSize: 14, fontWeight: 700, zIndex: 200 }}>{toast}</div>}

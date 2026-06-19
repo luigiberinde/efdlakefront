@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { requireLC } from "@/lib/auth";
+import { requireLC, getAuthStatus } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { refreshCurrentHoursForApplicantWeek, shiftLengthForCurrentHours, refreshStoredShiftVectorLengths } from "@/lib/current-hours-refresh";
 
 export async function POST(req) {
   const authErr = await requireLC();
   if (authErr) return NextResponse.json(authErr, { status: authErr.status || 401 });
+  const { portal } = await getAuthStatus();
 
   try {
     const { shiftId, appId } = await req.json();
@@ -20,6 +21,7 @@ export async function POST(req) {
       .from("shifts")
       .select("*")
       .eq("id", shiftId)
+      .eq("portal", portal || "lakefront")
       .single();
 
     if (shiftErr || !shift) {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase-server";
 import { normalizeEmail } from "@/lib/vector-core";
+import { currentPortalOrLakefront, normalizeShiftTypeForPortal } from "@/lib/auth";
 
 function cleanText(v) { return String(v || "").trim(); }
 function cleanEmail(v) { return normalizeEmail(v); }
@@ -13,7 +14,8 @@ export async function POST(req) {
     const body = await req.json();
     const name = cleanText(body.name);
     const email = cleanEmail(body.email);
-    const type = body.type === "guard" || body.type === "manager" ? body.type : "any";
+    const portal = await currentPortalOrLakefront();
+    const type = body.type === "any" ? "any" : normalizeShiftTypeForPortal(body.type, portal);
     const time = body.time === "early" || body.time === "late" ? body.time : "any";
     const startDate = cleanText(body.startDate);
     const endDate = cleanText(body.endDate);
@@ -31,6 +33,7 @@ export async function POST(req) {
     // but post-time sending dedupes by email so a person receives only one email per posted shift.
     const { data: existing, error: existingError } = await sb.from("shift_watch_requests")
       .select("id, type, time, start_date, end_date, status")
+      .eq("portal", portal)
       .eq("status", "active")
       .ilike("email", email)
       .limit(100);
@@ -46,6 +49,7 @@ export async function POST(req) {
     const overlapping = (existing || []).filter(w => filtersOverlap(w.start_date, w.end_date, startDate, endDate)).length;
 
     const { data, error } = await sb.from("shift_watch_requests").insert({
+      portal,
       name,
       email,
       type,
@@ -70,14 +74,16 @@ export async function DELETE(req) {
     const body = await req.json().catch(() => ({}));
     const watchId = Number(body.watchId);
     const email = cleanEmail(body.email);
+    const portal = await currentPortalOrLakefront();
     if (!watchId || !isValidEmail(email)) {
       return NextResponse.json({ success: false, error: "Missing notification ID or email." }, { status: 400 });
     }
 
     const sb = getServiceClient();
     const { data: existing, error: lookupError } = await sb.from("shift_watch_requests")
-      .select("id, email, status")
+      .select("id, email, status, portal")
       .eq("id", watchId)
+      .eq("portal", portal)
       .single();
     if (lookupError || !existing) {
       return NextResponse.json({ success: false, error: "Notification not found." }, { status: 404 });

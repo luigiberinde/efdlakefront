@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireLC } from "@/lib/auth";
+import { requireLC, currentPortalOrLakefront, normalizeShiftTypeForPortal } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { validatePersonDate, chooseVectorShift, vectorShiftColumns, normalizeEmail } from "@/lib/vector-core";
 import { isEmailEnabled, sendNotificationEmail } from "@/lib/gmail";
@@ -41,6 +41,7 @@ async function notifyMatchingWatchers(sb, shift) {
   if (!isEmailEnabled() || !shift?.id || shift.status !== "open") return { sent: 0, skipped: true };
   const { data: watchers, error } = await sb.from("shift_watch_requests")
     .select("*")
+    .eq("portal", shift.portal || "lakefront")
     .eq("status", "active")
     .lte("start_date", shift.date)
     .gte("end_date", shift.date);
@@ -88,10 +89,11 @@ export async function POST(req) {
     const body = await req.json();
     const dryRun = body.dryRun === true;
     const lcOverride = body.lcOverride === true;
+    const portal = await currentPortalOrLakefront();
 
     const posterName = cleanText(body.name);
     const posterEmail = cleanEmail(body.email);
-    const type = body.type === "manager" ? "manager" : "guard";
+    const type = normalizeShiftTypeForPortal(body.type, portal);
     const time = body.time === "late" ? "late" : "early";
     const date = cleanText(body.date);
     const note = cleanText(body.note);
@@ -110,7 +112,7 @@ export async function POST(req) {
 
     const sb = getServiceClient();
     const { count } = await sb.from("shifts").select("id", { count: "exact", head: true })
-      .eq("status", "open").eq("poster_email", posterEmail).eq("date", date).eq("type", type).eq("time", time);
+      .eq("portal", portal).eq("status", "open").eq("poster_email", posterEmail).eq("date", date).eq("type", type).eq("time", time);
     if ((count || 0) > 0) {
       return NextResponse.json({ success: false, error: "This shift was already posted under this email. Please contact an LC if you think this is an issue." }, { status: 400 });
     }
@@ -247,6 +249,7 @@ export async function POST(req) {
     }
 
     const payload = {
+      portal,
       poster_name: posterName,
       poster_email: posterEmail,
       type,
@@ -256,7 +259,7 @@ export async function POST(req) {
       is_swap: isSwap,
       swap_partner_name: isSwap ? cleanText(body.swapName) : null,
       swap_partner_email: isSwap ? cleanEmail(body.swapEmail) : null,
-      swap_partner_type: isSwap ? (body.swapType === "manager" ? "manager" : "guard") : null,
+      swap_partner_type: isSwap ? normalizeShiftTypeForPortal(body.swapType, portal) : null,
       swap_partner_time: isSwap ? (body.swapTime === "late" ? "late" : "early") : null,
       swap_partner_date: isSwap ? cleanText(body.swapDate) : null,
       has_preferred: hasPreferred,

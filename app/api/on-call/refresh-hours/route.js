@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireLC } from "@/lib/auth";
+import { requireLakefrontLC as requireLC } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { addDays, findUserShifts, findVectorUser, getScheduleRows, getVectorWeekHoursForPerson, normalizeEmail } from "@/lib/vector-core";
 

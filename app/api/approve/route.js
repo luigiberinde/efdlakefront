@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireLC } from "@/lib/auth";
+import { requireLC, getAuthStatus } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { buildApprovalNotifications } from "@/lib/notifications";
 import { isEmailEnabled, sendNotificationEmail } from "@/lib/gmail";
@@ -13,12 +13,39 @@ async function insertNotificationRow(sb, row) {
   }
   return { error: null };
 }
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value !== null && value !== undefined && String(value).trim() !== "") return value;
+  }
+  return null;
+}
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+function shiftLengthFor(shift) {
+  return numberOrNull(shift?.poster_vector_shift_length) ?? numberOrNull(shift?.lc_override_shift_length) ?? 0;
+}
+function onCallTotalHoursForApproval(extraType, baseShiftLength, onCallEstimatedHours) {
+  const base = Number(baseShiftLength || 0);
+  const extra = Number(onCallEstimatedHours || 0);
+  if (extraType === "all_day_if_approved") return 12.5;
+  if (["come_in_earlier", "stay_after_early"].includes(extraType)) return Math.round((base + extra) * 100) / 100;
+  return extra || null;
+}
 
 export async function POST(req) {
   const err = await requireLC();
   if (err) return NextResponse.json(err, { status: err.status });
 
-  const { shiftId, appId } = await req.json();
+  const { portal } = await getAuthStatus();
+  const { shiftId, appId, onCallApproval } = await req.json();
+  const safeOnCallApproval = onCallApproval && typeof onCallApproval === "object" ? onCallApproval : null;
+  const onCallApprovalMode = ["normal", "use_on_call", "lc_custom"].includes(safeOnCallApproval?.mode) ? safeOnCallApproval.mode : "normal";
+  const onCallCustomStart = String(safeOnCallApproval?.customStart || "").trim();
+  const onCallCustomEnd = String(safeOnCallApproval?.customEnd || "").trim();
+  const onCallCustomInstructions = String(safeOnCallApproval?.instructions || "").trim();
 
   if (!shiftId || !appId) {
     return NextResponse.json(
@@ -32,6 +59,7 @@ export async function POST(req) {
   const { data, error } = await sb.rpc("approve_application", {
     p_shift_id: shiftId,
     p_app_id: appId,
+    p_portal: portal || "lakefront",
   });
 
   if (error) {
@@ -58,6 +86,8 @@ export async function POST(req) {
       type,
       time,
       date,
+      poster_vector_shift_length,
+      lc_override_shift_length,
       is_swap,
       swap_partner_name,
       swap_partner_email,
@@ -67,6 +97,7 @@ export async function POST(req) {
       swap_partner_vector_full_name
     `)
     .eq("id", shiftId)
+    .eq("portal", portal || "lakefront")
     .single();
 
   if (shiftContextError) {
@@ -81,13 +112,77 @@ export async function POST(req) {
       applicant_name,
       applicant_email,
       applicant_vector_full_name,
-      applicant_vector_email
+      applicant_vector_email,
+      on_call_signup_id,
+      on_call_resolution_type,
+      on_call_custom_start,
+      on_call_custom_end,
+      on_call_estimated_hours,
+      on_call_note,
+      on_call_phone,
+      on_call_projected_hours_if_used,
+      on_call_would_be_ot
     `)
     .eq("id", appId)
     .single();
 
   if (applicationContextError) {
     console.error("approval application context error", applicationContextError);
+  }
+
+  let onCallSignupContext = null;
+  if (applicationContext?.on_call_signup_id) {
+    const { data: signupCtx, error: signupCtxErr } = await sb
+      .from("on_call_signups")
+      .select("*")
+      .eq("id", applicationContext.on_call_signup_id)
+      .maybeSingle();
+    if (signupCtxErr) console.error("approval on-call signup context error", signupCtxErr);
+    onCallSignupContext = signupCtx || null;
+  }
+
+  const resolvedOnCallType = firstNonEmpty(applicationContext?.on_call_resolution_type, onCallSignupContext?.extra_availability_type);
+  const resolvedOnCallStart = firstNonEmpty(applicationContext?.on_call_custom_start, onCallSignupContext?.custom_start);
+  const resolvedOnCallEnd = firstNonEmpty(applicationContext?.on_call_custom_end, onCallSignupContext?.custom_end);
+  const resolvedOnCallEstimated = numberOrNull(applicationContext?.on_call_estimated_hours) ?? numberOrNull(onCallSignupContext?.estimated_hours);
+  const baseShiftLength = shiftLengthFor(shiftContext);
+  const resolvedOnCallTotal = onCallTotalHoursForApproval(resolvedOnCallType, baseShiftLength, resolvedOnCallEstimated);
+  const resolvedOnCallProjected = numberOrNull(applicationContext?.on_call_projected_hours_if_used) ?? numberOrNull(onCallSignupContext?.projected_hours_if_used);
+
+  if (applicationContext?.on_call_signup_id) {
+    try {
+      await sb.from("applications").update({
+        on_call_resolution_type: applicationContext?.on_call_resolution_type || resolvedOnCallType || null,
+        on_call_custom_start: applicationContext?.on_call_custom_start || resolvedOnCallStart || null,
+        on_call_custom_end: applicationContext?.on_call_custom_end || resolvedOnCallEnd || null,
+        on_call_estimated_hours: applicationContext?.on_call_estimated_hours ?? resolvedOnCallEstimated ?? null,
+        on_call_phone: applicationContext?.on_call_phone || onCallSignupContext?.phone || null,
+        on_call_note: applicationContext?.on_call_note || onCallSignupContext?.note || null,
+        on_call_projected_hours_if_used: applicationContext?.on_call_projected_hours_if_used ?? resolvedOnCallProjected ?? null,
+        on_call_would_be_ot: applicationContext?.on_call_would_be_ot || (resolvedOnCallProjected != null ? resolvedOnCallProjected > 40 : false),
+        on_call_approval_mode: onCallApprovalMode,
+        on_call_lc_custom_start: onCallApprovalMode === "lc_custom" ? onCallCustomStart || null : null,
+        on_call_lc_custom_end: onCallApprovalMode === "lc_custom" ? onCallCustomEnd || null : null,
+        on_call_lc_instructions: onCallApprovalMode === "lc_custom" ? onCallCustomInstructions || null : null,
+        on_call_approved_at: new Date().toISOString(),
+      }).eq("id", appId);
+
+      await sb.from("on_call_signups").update({
+        status: "used",
+        related_shift_id: shiftId,
+        related_application_id: appId,
+        used_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        on_call_approval_mode: onCallApprovalMode,
+        on_call_lc_custom_start: onCallApprovalMode === "lc_custom" ? onCallCustomStart || null : null,
+        on_call_lc_custom_end: onCallApprovalMode === "lc_custom" ? onCallCustomEnd || null : null,
+        on_call_lc_instructions: onCallApprovalMode === "lc_custom" ? onCallCustomInstructions || null : null,
+        on_call_approved_at: new Date().toISOString(),
+        todo_complete: false,
+      }).eq("id", applicationContext.on_call_signup_id).eq("status", "active");
+    } catch (onCallErr) {
+      console.error("approval on-call marking error", onCallErr);
+    }
   }
 
   let currentHoursRefresh = null;
@@ -144,6 +239,20 @@ export async function POST(req) {
     swap_partner_date: shiftContext?.swap_partner_date || data.swap_partner_date,
     swap_partner_vector_full_name:
       shiftContext?.swap_partner_vector_full_name || null,
+
+    on_call_signup_id: applicationContext?.on_call_signup_id || null,
+    on_call_resolution_type: resolvedOnCallType || null,
+    on_call_custom_start: resolvedOnCallStart || null,
+    on_call_custom_end: resolvedOnCallEnd || null,
+    on_call_estimated_hours: resolvedOnCallEstimated ?? null,
+    on_call_note: applicationContext?.on_call_note || onCallSignupContext?.note || null,
+    on_call_phone: applicationContext?.on_call_phone || onCallSignupContext?.phone || null,
+    on_call_projected_hours_if_used: resolvedOnCallProjected ?? null,
+    on_call_would_be_ot: applicationContext?.on_call_would_be_ot || (resolvedOnCallProjected != null ? resolvedOnCallProjected > 40 : false),
+    on_call_approval_mode: onCallApprovalMode,
+    on_call_lc_custom_start: onCallCustomStart || null,
+    on_call_lc_custom_end: onCallCustomEnd || null,
+    on_call_lc_instructions: onCallCustomInstructions || null,
   };
 
   const emailOn = isEmailEnabled();

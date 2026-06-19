@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireLC } from "@/lib/auth";
+import { requireLakefrontLC as requireLC } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase-server";
 import { buildOnCallApprovalNotification } from "@/lib/notifications";
 import { isEmailEnabled, sendNotificationEmail } from "@/lib/gmail";
